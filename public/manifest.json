@@ -1,0 +1,24 @@
+{
+  "name": "HD PLY B2B Wholesale Portal",
+  "short_name": "HD PLY",
+  "description": "Premium B2B Plywood & Laminate Bulk Order Platform",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#1c1917",
+  "theme_color": "#78350f",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/wood_calibrated.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/wood_calibrated.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
