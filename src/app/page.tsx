@@ -14,6 +14,7 @@ interface Dealer {
   shop_address?: string;
   device_registered?: boolean;
   created_at: string;
+  status?: string;
 }
 
 interface EnquiryItem {
@@ -31,6 +32,7 @@ interface Enquiry {
   id: string;
   dealer_name: string;
   dealer_phone: string;
+  company_name?: string;
   delivery_location: string;
   comments?: string;
   status: string;
@@ -405,6 +407,7 @@ export default function AdminDashboard() {
           id: enq.id,
           dealer_name: registeredDealer ? registeredDealer.full_name : enq.dealer_name,
           dealer_phone: registeredDealer ? registeredDealer.phone_number : enq.dealer_phone,
+          company_name: enq.company_name,
           delivery_location: enq.delivery_location,
           comments: enq.comments,
           status: enq.status,
@@ -490,6 +493,7 @@ export default function AdminDashboard() {
               id: payload.new.id,
               dealer_name: payload.new.dealer_name,
               dealer_phone: payload.new.dealer_phone,
+              company_name: payload.new.company_name,
               delivery_location: payload.new.delivery_location,
               comments: payload.new.comments || '',
               status: payload.new.status,
@@ -912,65 +916,162 @@ export default function AdminDashboard() {
     }
   };
 
+  const handleToggleDealerBlock = async (dealerId: string, currentStatus?: string) => {
+    const nextStatus = currentStatus === 'blocked' ? 'active' : 'blocked';
+    const actionName = nextStatus === 'blocked' ? 'Block' : 'Unblock';
+    if (!window.confirm(`Are you sure you want to ${actionName} this dealer profile?`)) return;
+
+    try {
+      const { error } = await supabase
+        .from('dealers')
+        .update({ status: nextStatus })
+        .eq('id', dealerId);
+
+      if (error) throw error;
+      alert(`Dealer profile status updated to ${nextStatus}!`);
+      await fetchData();
+    } catch (err) {
+      console.error(`Failed to ${actionName} dealer:`, err);
+      alert(`Error trying to ${actionName} dealer.`);
+    }
+  };
+
+  const handleDeleteDealer = async (dealerId: string) => {
+    if (!window.confirm("Are you sure you want to permanently delete this dealer profile? This action is irreversible.")) return;
+
+    try {
+      const { error } = await supabase
+        .from('dealers')
+        .delete()
+        .eq('id', dealerId);
+
+      if (error) throw error;
+      alert("Dealer profile permanently deleted from records.");
+      await fetchData();
+    } catch (err) {
+      console.error("Failed to delete dealer:", err);
+      alert("Error trying to delete dealer.");
+    }
+  };
+
+  const getDealerLedgerTransactions = (dealerPhone: string) => {
+    // 1. Get all completed / sent enquiries
+    const bills = enquiries
+      .filter((e) => e.dealer_phone === dealerPhone && (e.status.toLowerCase() === 'completed' || e.status.toLowerCase() === 'sent'))
+      .map((e) => ({
+        id: e.id,
+        date: new Date(e.created_at),
+        type: 'Bill',
+        ref: `Bill Ref: ENQ-${e.id.substring(0, 8).toUpperCase()}`,
+        debit: e.billed_amount || 0,
+        credit: 0,
+        payment_status: e.payment_status || 'Pending',
+        details: e
+      }));
+
+    // 2. Get all payment logs
+    const savedLogs = typeof window !== 'undefined' ? JSON.parse(localStorage.getItem('hd_payment_logs') || '[]') : [];
+    const receipts = savedLogs
+      .filter((p: any) => p.dealer_phone === dealerPhone)
+      .map((p: any) => ({
+        id: p.id,
+        date: new Date(p.created_at),
+        type: 'Receipt',
+        ref: `Receipt: ${p.id.toUpperCase()}${p.reference_bill_id !== 'advance' ? ` (Against ENQ-${p.reference_bill_id.substring(0,8).toUpperCase()})` : ' (Advance)'}`,
+        debit: 0,
+        credit: p.amount,
+        payment_status: 'Paid',
+        details: p
+      }));
+
+    // Combine and sort chronologically (ascending)
+    const combined = [...bills, ...receipts].sort((a, b) => a.date.getTime() - b.date.getTime());
+
+    // Calculate running balances
+    let runningBal = 0;
+    return combined.map((tx) => {
+      runningBal += tx.debit - tx.credit;
+      return {
+        ...tx,
+        balance: runningBal
+      };
+    });
+  };
+
   const printLedgerHTML = (dealer: Dealer) => {
-    const dealerEnqs = enquiries.filter(
-      (e) => e.dealer_phone === dealer.phone_number && e.status.toLowerCase() === 'completed'
-    );
+    const transactions = getDealerLedgerTransactions(dealer.phone_number);
     const outstanding = getDealerOutstandingBalance(dealer.phone_number);
 
     const printWindow = window.open('', '_blank');
     if (!printWindow) return;
+
+    let rowsHtml = '';
+    transactions.forEach((tx) => {
+      rowsHtml += `
+        <tr>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd;">${tx.date.toLocaleDateString('en-IN')}</td>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd;">${tx.ref}</td>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd; text-align: right; color: ${tx.debit > 0 ? '#b45309' : '#333'};">
+            ${tx.debit > 0 ? `₹${tx.debit.toLocaleString('en-IN')}` : '-'}
+          </td>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd; text-align: right; color: ${tx.credit > 0 ? '#15803d' : '#333'};">
+            ${tx.credit > 0 ? `₹${tx.credit.toLocaleString('en-IN')}` : '-'}
+          </td>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd; text-align: right; font-weight: bold;">
+            ₹${tx.balance.toLocaleString('en-IN')}
+          </td>
+        </tr>
+      `;
+    });
 
     let html = `
       <html>
       <head>
         <title>Ledger - ${dealer.full_name}</title>
         <style>
-          body { font-family: monospace; padding: 20px; color: #333; }
-          h2 { margin-bottom: 5px; }
-          .header-info { margin-bottom: 20px; border-bottom: 2px solid #333; padding-bottom: 10px; }
-          .tx-card { border-bottom: 1px solid #ccc; padding: 10px 0; }
-          .item-row { margin-left: 20px; font-size: 12px; color: #666; }
+          body { font-family: monospace; padding: 20px; color: #1c1917; background-color: #fdfbf7; }
+          h2 { margin-bottom: 5px; color: #78350f; border-bottom: 4px solid #78350f; padding-bottom: 8px; }
+          .header-info { margin-bottom: 25px; display: grid; grid-template-columns: 1fr 1fr; gap: 15px; border-bottom: 2px solid #78350f; padding-bottom: 15px; }
           .bold { font-weight: bold; }
+          table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 11px; }
+          th { background-color: #78350f; color: #fff; padding: 8px; text-align: left; }
           @media print {
-            body { padding: 0; }
+            body { padding: 0; background: #fff; }
           }
         </style>
       </head>
       <body>
-        <h2>HD PLY - CUSTOMER STATEMENT</h2>
+        <h2>HD PLYWOOD - CUSTOMER LEDGER STATEMENT</h2>
         <div class="header-info">
-          <div><strong>Customer Name:</strong> ${dealer.full_name}</div>
-          <div><strong>Phone Number :</strong> ${dealer.phone_number}</div>
-          <div><strong>GSTIN Number :</strong> ${dealer.gstin || 'N/A'}</div>
-          <div><strong>Statement Date:</strong> ${new Date().toLocaleDateString('en-IN')}</div>
-          <div><strong>Outstanding Balance:</strong> <span class="bold">₹${outstanding}/-</span></div>
-        </div>
-        <h3>TRANSACTION HISTORY:</h3>
-    `;
-
-    dealerEnqs.forEach((enq, idx) => {
-      html += `
-        <div class="tx-card">
           <div>
-            <strong>Date:</strong> ${new Date(enq.created_at).toLocaleDateString('en-IN')} | 
-            <strong>Ref:</strong> ${enq.id.substring(0, 8).toUpperCase()} |
-            <strong>Status:</strong> <span class="bold">${enq.payment_status}</span> |
-            <strong>Amount:</strong> <span class="bold">₹${enq.billed_amount || 0}/-</span>
+            <div><strong>Customer/Dealer:</strong> ${dealer.full_name}</div>
+            <div><strong>Phone Number:</strong> ${dealer.phone_number}</div>
+            <div><strong>Email Address:</strong> ${dealer.email}</div>
           </div>
-          <div style="margin-top: 5px;"><strong>Materials Taken:</strong></div>
-      `;
-      (enq.enquiry_items || []).forEach((item) => {
-        html += `
-          <div class="item-row">
-            • ${item.product_name} (${item.thickness}, ${item.size} ft, ${item.quality || 'Standard'}) x ${item.quantity} Sheets (Rate: ₹${item.rate || 0}/-)
+          <div style="text-align: right;">
+            <div><strong>GSTIN Number:</strong> ${dealer.gstin || 'N/A'}</div>
+            <div><strong>Statement Date:</strong> ${new Date().toLocaleDateString('en-IN')}</div>
+            <div><strong>Final Outstanding:</strong> <span class="bold" style="font-size: 14px; color: #78350f;">₹${outstanding.toLocaleString('en-IN')}/-</span></div>
           </div>
-        `;
-      });
-      html += `</div>`;
-    });
-
-    html += `
+        </div>
+        <h3>CHRONOLOGICAL LEDGER DETAILS:</h3>
+        <table>
+          <thead>
+            <tr>
+              <th style="text-align: left;">Date</th>
+              <th style="text-align: left;">Particulars</th>
+              <th style="text-align: right;">Debit (Purchase)</th>
+              <th style="text-align: right;">Credit (Receipt)</th>
+              <th style="text-align: right;">Balance</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rowsHtml}
+          </tbody>
+        </table>
+        <div style="font-size: 9px; color: #78716c; text-align: center; margin-top: 40px; border-top: 1px solid #d6d3d1; padding-top: 10px;">
+          Thank you for choosing HD PLYWOOD
+        </div>
       </body>
       <script>
         window.onload = function() {
@@ -980,7 +1081,6 @@ export default function AdminDashboard() {
       </script>
       </html>
     `;
-
     printWindow.document.write(html);
     printWindow.document.close();
   };
@@ -1011,6 +1111,24 @@ export default function AdminDashboard() {
       text += `\n- Date: ${new Date(e.created_at).toLocaleDateString('en-IN')} | Total: ₹${e.billed_amount || 0}/- (${e.payment_status || 'Pending'})`;
     });
     
+    return `https://wa.me/${cleanPhone}?text=${encodeURIComponent(text)}`;
+  };
+
+  const getWhatsAppInvoiceLinkForEnq = (enq: Enquiry) => {
+    const cleanPhone = enq.dealer_phone.replace(/[^0-9]/g, '');
+    let text = `*HD PLYWOOD - TAX INVOICE RECEIPT*\n`;
+    text += `-------------------------------\n`;
+    text += `*Ref Order ID:* ${enq.id.substring(0, 8).toUpperCase()}\n`;
+    text += `*Date:* ${new Date(enq.created_at).toLocaleDateString('en-IN')}\n`;
+    text += `*Customer/Dealer:* ${enq.dealer_name}\n`;
+    text += `*Delivery:* ${enq.delivery_location}\n`;
+    text += `*Billed Amount:* ₹${(enq.billed_amount || 0).toLocaleString('en-IN')}/-\n`;
+    text += `*Payment Status:* ${enq.payment_status || 'Pending'}\n\n`;
+    text += `*Items Details:*`;
+    (enq.enquiry_items || []).forEach(item => {
+      text += `\n- ${item.product_name} (${item.thickness}, ${item.size}${item.quality ? `, ${item.quality}` : ''}) x ${item.quantity} Sheets`;
+    });
+    text += `\n\nThank you for doing business with us!`;
     return `https://wa.me/${cleanPhone}?text=${encodeURIComponent(text)}`;
   };
 
@@ -1101,15 +1219,46 @@ export default function AdminDashboard() {
     if (!invoiceCaptureRef.current || !activeBillingEnquiry) return;
     setIsCapturingBill(true);
     try {
-      // Capture the printed invoice component as canvas
-      const canvas = await html2canvas(invoiceCaptureRef.current, {
+      // Clone element off-screen to avoid hidden overflow / viewport scale issues
+      const originalElement = invoiceCaptureRef.current;
+      const clone = originalElement.cloneNode(true) as HTMLElement;
+      clone.style.position = 'fixed';
+      clone.style.top = '-9999px';
+      clone.style.left = '-9999px';
+      clone.style.width = '450px';
+      clone.style.height = 'auto';
+      clone.style.backgroundColor = '#ffffff';
+      document.body.appendChild(clone);
+
+      const canvas = await html2canvas(clone, {
         scale: 2,
         useCORS: true,
         backgroundColor: '#ffffff'
       });
       
-      // Convert to image download link
+      document.body.removeChild(clone);
+
+      // Convert to image download link or share
       const imageURL = canvas.toDataURL('image/png');
+      
+      // Try sharing first if navigator.share exists (excellent for mobile)
+      if (navigator.share && navigator.canShare) {
+        try {
+          const blob = await (await fetch(imageURL)).blob();
+          const file = new File([blob], `HD-PLY-Invoice-${activeBillingEnquiry.id.substring(0, 8).toUpperCase()}.png`, { type: 'image/png' });
+          if (navigator.canShare({ files: [file] })) {
+            await navigator.share({
+              files: [file],
+              title: 'HD PLY Invoice',
+              text: `Invoice for ${activeBillingEnquiry.dealer_name}`
+            });
+            return;
+          }
+        } catch (shareErr) {
+          console.warn('Native share failed, falling back to download:', shareErr);
+        }
+      }
+
       const downloadLink = document.createElement('a');
       downloadLink.href = imageURL;
       downloadLink.download = `HD-PLY-Invoice-${activeBillingEnquiry.id.substring(0, 8).toUpperCase()}.png`;
@@ -1507,8 +1656,8 @@ export default function AdminDashboard() {
 
                         {/* Enquiry Header */}
                         <div className="flex justify-between items-start flex-wrap gap-2.5 pb-3 border-b border-stone-150">
-                          <div>
-                            <div className="flex items-center space-x-2">
+                          <div className="space-y-1">
+                            <div className="flex items-center space-x-2 flex-wrap gap-y-1">
                               <h4 className="text-sm font-black text-stone-900 leading-none">{enq.dealer_name}</h4>
                               <span className="text-[9px] font-bold text-amber-800 bg-amber-50 border border-amber-200/50 rounded px-1.5 py-0.5 tracking-wider uppercase">
                                 Ref: {enq.id.substring(0, 8)}
@@ -1523,10 +1672,19 @@ export default function AdminDashboard() {
                                 </svg>
                               </button>
                             </div>
-                            <div className="flex items-center space-x-3 text-xs text-stone-500 mt-1.5">
-                              <span>Phone: <strong>{enq.dealer_phone}</strong></span>
+                            
+                            <div className="text-[10px] text-stone-500 font-medium">
+                              Company: <strong className="text-stone-800">{enq.company_name || 'Individual Profile'}</strong>
+                            </div>
+                            
+                            <div className="flex items-center flex-wrap gap-x-3 gap-y-1 text-[11px] text-stone-500 mt-1">
+                              <span>Phone: <strong className="text-stone-750">{enq.dealer_phone}</strong></span>
                               <span>•</span>
-                              <span>{new Date(enq.created_at).toLocaleString()}</span>
+                              <span>{new Date(enq.created_at).toLocaleString('en-IN')}</span>
+                              <span>•</span>
+                              <span className="inline-flex items-center text-amber-800 bg-amber-50 border border-amber-100 rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider">
+                                Origin: Customer Portal (hd-enquiry)
+                              </span>
                             </div>
                           </div>
 
@@ -1713,11 +1871,21 @@ export default function AdminDashboard() {
                 </div>
               ) : (
                 dealers.map((dealer) => (
-                  <div key={dealer.id} className="glass-card bg-white border border-stone-200 rounded-3xl p-5 space-y-3.5 shadow-xs">
+                  <div
+                    key={dealer.id}
+                    className={`glass-card bg-white border rounded-3xl p-5 space-y-3.5 shadow-xs relative overflow-hidden transition-all duration-300 ${
+                      dealer.status === 'blocked' ? 'border-red-300 bg-red-50/10 opacity-75' : 'border-stone-200'
+                    }`}
+                  >
                     <div className="flex justify-between items-start">
                       <div>
                         <h4 className="text-sm font-bold text-stone-900 leading-snug">{dealer.full_name}</h4>
-                        {dealer.device_registered ? (
+                        {dealer.status === 'blocked' ? (
+                          <span className="inline-flex items-center space-x-1 mt-1">
+                            <span className="h-1.5 w-1.5 rounded-full bg-red-500 animate-pulse" />
+                            <span className="text-[9px] font-bold text-red-655 uppercase tracking-wider">Blocked</span>
+                          </span>
+                        ) : dealer.device_registered ? (
                           <span className="inline-flex items-center space-x-1 mt-1">
                             <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
                             <span className="text-[9px] font-bold text-emerald-600 uppercase tracking-wider">Online</span>
@@ -1755,6 +1923,25 @@ export default function AdminDashboard() {
                           <span className="text-[11px] text-stone-750 leading-relaxed italic">"{dealer.shop_address}"</span>
                         </div>
                       )}
+                      
+                      <div className="pt-3 border-t border-stone-100 flex gap-2">
+                        <button
+                          onClick={() => handleToggleDealerBlock(dealer.id, dealer.status)}
+                          className={`flex-1 rounded-xl py-1.5 px-3 text-[10px] font-black uppercase tracking-wider transition cursor-pointer active:scale-95 ${
+                            dealer.status === 'blocked'
+                              ? 'bg-red-100 border border-red-200 text-red-700 hover:bg-red-200 shadow-none'
+                              : 'bg-stone-100 border border-stone-200 text-stone-700 hover:bg-stone-200 shadow-none'
+                          }`}
+                        >
+                          {dealer.status === 'blocked' ? '🔴 Unblock' : '🚫 Block'}
+                        </button>
+                        <button
+                          onClick={() => handleDeleteDealer(dealer.id)}
+                          className="rounded-xl border border-red-200 hover:bg-red-50 text-red-655 py-1.5 px-3 text-[10px] font-black uppercase tracking-wider transition cursor-pointer active:scale-95"
+                        >
+                          🗑️ Delete
+                        </button>
+                      </div>
                     </div>
                   </div>
                 ))
@@ -1981,192 +2168,126 @@ export default function AdminDashboard() {
                         </div>
                       </div>
 
-                      {/* Chronological items sheet */}
+                      {/* Chronological Tally-style Ledger Table */}
                       <div className="space-y-4">
-                        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
-                          <span className="text-[10px] font-extrabold text-stone-400 uppercase tracking-widest block">Material Ledger History</span>
-                          
-                          {enquiries.filter((e) => e.dealer_phone === selectedLedgerDealer.phone_number && (e.status.toLowerCase() === 'completed' || e.status.toLowerCase() === 'sent')).length > 0 && (
-                            <div className="flex items-center space-x-4">
-                              <label className="flex items-center space-x-2 text-xs font-bold text-stone-600 cursor-pointer select-none">
-                                <input
-                                  type="checkbox"
-                                  checked={
-                                    selectedBillIds.length === enquiries.filter((e) => e.dealer_phone === selectedLedgerDealer.phone_number && (e.status.toLowerCase() === 'completed' || e.status.toLowerCase() === 'sent')).length
-                                  }
-                                  onChange={(e) => {
-                                    if (e.target.checked) {
-                                      const allIds = enquiries
-                                        .filter((e) => e.dealer_phone === selectedLedgerDealer.phone_number && (e.status.toLowerCase() === 'completed' || e.status.toLowerCase() === 'sent'))
-                                        .map((enq) => enq.id);
-                                      setSelectedBillIds(allIds);
-                                    } else {
-                                      setSelectedBillIds([]);
-                                    }
-                                  }}
-                                  className="rounded border-stone-300 text-amber-800 focus:ring-amber-800 h-4 w-4"
-                                />
-                                <span>Select All</span>
-                              </label>
-
-                              {selectedBillIds.length > 0 && (
-                                <button
-                                  onClick={handleSendSelectedBills}
-                                  className="bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl py-1.5 px-4 text-xs font-bold shadow-xs transition flex items-center space-x-1.5"
-                                >
-                                  <svg className="h-3.5 w-3.5 fill-white" viewBox="0 0 24 24">
-                                    <path d="M12.008.01A11.996 11.996 0 00.007 12c0 2.215.58 4.37 1.688 6.275L.057 24l6.326-1.66c1.79.977 3.8 1.493 5.86 1.496a12.003 12.003 0 0012.007-12c0-3.208-1.248-6.223-3.513-8.49A11.947 11.947 0 0012.008.01zm0 22c-1.847-.003-3.66-.496-5.242-1.424l-.376-.223-3.89.98 1.03-3.766-.245-.389A9.971 9.971 0 011.995 12c0-5.522 4.492-10 10.013-10 2.668 0 5.176 1.04 7.062 2.926A9.96 9.96 0 0122.02 12c0 5.522-4.492 10-10.012 10z" />
-                                  </svg>
-                                  <span>Send Selected ({selectedBillIds.length})</span>
-                                </button>
+                        <span className="text-[10px] font-extrabold text-stone-400 uppercase tracking-widest block">Tally-Style Detailed Ledger</span>
+                        <div className="overflow-x-auto border border-stone-200 rounded-2xl bg-white shadow-xs">
+                          <table className="min-w-[600px] w-full text-left border-collapse">
+                            <thead>
+                              <tr className="bg-stone-50 border-b border-stone-200 text-[10px] font-extrabold text-stone-500 uppercase tracking-wider">
+                                <th className="py-3 px-4 w-28">Date</th>
+                                <th className="py-3 px-3">Particulars</th>
+                                <th className="py-3 px-3 text-right w-32">Debit (Dr)</th>
+                                <th className="py-3 px-3 text-right w-32">Credit (Cr)</th>
+                                <th className="py-3 px-4 text-right w-36">Running Balance</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-stone-100 text-xs font-semibold text-stone-800">
+                              {getDealerLedgerTransactions(selectedLedgerDealer.phone_number).length === 0 ? (
+                                <tr>
+                                  <td colSpan={5} className="py-8 text-center text-stone-400 font-medium">No transactions found for this party.</td>
+                                </tr>
+                              ) : (
+                                getDealerLedgerTransactions(selectedLedgerDealer.phone_number).map((tx) => (
+                                  <tr key={tx.id} className="hover:bg-stone-50/40">
+                                    <td className="py-3.5 px-4 text-stone-500">{tx.date.toLocaleDateString('en-IN')}</td>
+                                    <td className="py-3.5 px-3">
+                                      <div className="flex items-center space-x-2">
+                                        <span className="font-bold text-stone-900">{tx.ref}</span>
+                                        {tx.type === 'Bill' && (
+                                          <button
+                                            onClick={() => openAlterEnquiryModal(tx.details)}
+                                            className="p-1 hover:bg-stone-200 rounded text-stone-600 transition"
+                                            title="Alter entry"
+                                          >
+                                            <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                                            </svg>
+                                          </button>
+                                        )}
+                                        {tx.type === 'Receipt' && (
+                                          <button
+                                            onClick={() => handleDeletePayment(tx.id)}
+                                            className="p-1 hover:bg-red-50 rounded text-red-655 transition"
+                                            title="Delete entry"
+                                          >
+                                            <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                            </svg>
+                                          </button>
+                                        )}
+                                      </div>
+                                    </td>
+                                    <td className="py-3.5 px-3 text-right font-black text-amber-900">
+                                      {tx.debit > 0 ? `₹${tx.debit.toLocaleString('en-IN')}/-` : '-'}
+                                    </td>
+                                    <td className="py-3.5 px-3 text-right font-black text-emerald-700">
+                                      {tx.credit > 0 ? `₹${tx.credit.toLocaleString('en-IN')}/-` : '-'}
+                                    </td>
+                                    <td className="py-3.5 px-4 text-right font-extrabold text-stone-900">
+                                      ₹{tx.balance.toLocaleString('en-IN')}/-
+                                    </td>
+                                  </tr>
+                                ))
                               )}
-                            </div>
-                          )}
+                            </tbody>
+                          </table>
                         </div>
-                        
-                        <div className="space-y-4">
+                      </div>
+
+                      {/* Pending Invoices / Payment Allocation List */}
+                      <div className="space-y-4 pt-4 border-t border-stone-150">
+                        <span className="text-[10px] font-extrabold text-stone-400 uppercase tracking-widest block">Unpaid / Pending Invoices</span>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                           {enquiries
-                            .filter((e) => e.dealer_phone === selectedLedgerDealer.phone_number && (e.status.toLowerCase() === 'completed' || e.status.toLowerCase() === 'sent'))
+                            .filter((e) => e.dealer_phone === selectedLedgerDealer.phone_number && (e.status.toLowerCase() === 'completed' || e.status.toLowerCase() === 'sent') && e.payment_status !== 'Paid')
                             .length === 0 ? (
-                              <div className="text-center py-12 border border-dashed border-stone-200 rounded-2xl text-xs text-stone-400 font-medium">
-                                No transactions found for this party.
+                              <div className="col-span-full text-center py-6 border border-dashed border-stone-200 rounded-2xl text-[10px] text-stone-400 font-bold uppercase">
+                                No pending or unpaid invoices.
                               </div>
                             ) : (
                               enquiries
-                                .filter((e) => e.dealer_phone === selectedLedgerDealer.phone_number && (e.status.toLowerCase() === 'completed' || e.status.toLowerCase() === 'sent'))
-                                 .map((enq) => (
-                                  <div key={enq.id} className="border border-stone-150 rounded-2xl p-4.5 space-y-3 bg-stone-50/20 flex flex-col md:flex-row md:items-start gap-4">
-                                    <div className="flex items-center pt-1 shrink-0">
-                                      <input
-                                        type="checkbox"
-                                        checked={selectedBillIds.includes(enq.id)}
-                                        onChange={(e) => {
-                                          if (e.target.checked) {
-                                            setSelectedBillIds((prev) => [...prev, enq.id]);
-                                          } else {
-                                            setSelectedBillIds((prev) => prev.filter((id) => id !== enq.id));
-                                          }
-                                        }}
-                                        className="rounded border-stone-300 text-amber-800 focus:ring-amber-800 h-5 w-5 cursor-pointer"
-                                      />
-                                    </div>
-                                    <div className="flex-1 space-y-3">
-                                      <div className="flex justify-between items-start flex-wrap gap-2.5 pb-2.5 border-b border-stone-150">
-                                        <div>
-                                          <div className="flex items-center space-x-1.5">
-                                            <span className="text-xs font-black text-stone-900">Bill Date: {new Date(enq.created_at).toLocaleDateString('en-IN')}</span>
-                                            <span className="text-[9px] text-stone-400 font-bold uppercase tracking-wider">(Ref: {enq.id.substring(0,8)})</span>
-                                            <button
-                                              onClick={() => openAlterEnquiryModal(enq)}
-                                              className="p-0.5 hover:bg-stone-200 rounded text-stone-600 transition"
-                                              title="Alter purchase entry"
-                                            >
-                                              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                                              </svg>
-                                            </button>
-                                          </div>
-                                          <span className="text-[10px] text-stone-500 mt-1 block">Billed Amount: <strong>₹{(enq.billed_amount || 0).toLocaleString('en-IN')}/-</strong></span>
+                                .filter((e) => e.dealer_phone === selectedLedgerDealer.phone_number && (e.status.toLowerCase() === 'completed' || e.status.toLowerCase() === 'sent') && e.payment_status !== 'Paid')
+                                .map((enq) => (
+                                  <div key={enq.id} className="rounded-2xl border border-stone-200 bg-stone-50/20 p-4 space-y-3 flex flex-col justify-between hover:border-amber-800/30 transition">
+                                    <div className="flex justify-between items-start">
+                                      <div>
+                                        <div className="flex items-center space-x-1.5">
+                                          <span className="text-xs font-black text-stone-900">Ref: ENQ-{enq.id.substring(0,8).toUpperCase()}</span>
+                                          <span className="text-[9px] text-stone-400 font-bold">{new Date(enq.created_at).toLocaleDateString('en-IN')}</span>
                                         </div>
-
-                                      <div className="flex items-center space-x-2">
-                                        <span className={`text-[9px] font-black rounded px-2 py-0.5 border ${
-                                          enq.payment_status === 'Paid'
-                                            ? 'border-emerald-200 bg-emerald-50 text-emerald-950'
-                                            : 'border-amber-250 bg-amber-50 text-amber-950'
-                                        }`}>
-                                          {enq.payment_status || 'Pending'}
-                                        </span>
-                                        <button
-                                          onClick={() => handleTogglePaymentStatus(enq.id, enq.payment_status || 'Pending')}
-                                          className="text-[9px] font-extrabold bg-stone-100 border border-stone-200 hover:bg-stone-200 text-stone-750 px-2 py-0.5 rounded transition"
-                                        >
-                                          Toggle Status
-                                        </button>
-                                        <button
-                                          onClick={() => openReturnGoodsModal(enq)}
-                                          className="text-[9px] font-extrabold bg-red-50 border border-red-200 hover:bg-red-100 text-red-650 px-2 py-0.5 rounded transition"
-                                        >
-                                          Return Goods
-                                        </button>
+                                        <span className="block text-[11px] font-extrabold text-stone-600 mt-1">Amount: ₹{(enq.billed_amount || 0).toLocaleString('en-IN')}/-</span>
                                       </div>
+                                      <span className="text-[9px] font-black text-amber-900 bg-amber-50 border border-amber-200/50 rounded-full px-2.5 py-0.5 uppercase tracking-wider">
+                                        {enq.payment_status || 'Pending'}
+                                      </span>
                                     </div>
-
-                                    {/* Material items taken */}
-                                    <div className="space-y-1.5">
-                                      <span className="text-[8px] font-extrabold text-stone-400 uppercase tracking-widest block">Items Taken:</span>
-                                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                                        {(enq.enquiry_items || []).map((item) => (
-                                          <div key={item.id} className="rounded-xl border border-stone-100 bg-white p-2 text-[11px] font-bold text-stone-850 flex justify-between items-center">
-                                            <div>
-                                              <span className="block text-stone-900 font-extrabold">{item.product_name}</span>
-                                              <span className="block text-[9px] text-stone-500 mt-0.5">
-                                                {item.thickness} | {item.size} ft {item.quality ? `| ${item.quality}` : ''}
-                                              </span>
-                                            </div>
-                                            <div className="text-right shrink-0">
-                                              <span className="block text-amber-800">{item.quantity} sheets</span>
-                                              <span className="block text-[9px] text-stone-400">Rate: ₹{item.rate}/-</span>
-                                            </div>
-                                          </div>
-                                        ))}
-                                      </div>
+                                    <div className="flex gap-2 pt-1">
+                                      <button
+                                        onClick={() => handleTogglePaymentStatus(enq.id, enq.payment_status || 'Pending')}
+                                        className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl py-1.5 text-[10px] font-black uppercase tracking-wider transition cursor-pointer active:scale-95"
+                                      >
+                                        Mark Paid
+                                      </button>
+                                      <a
+                                        href={getWhatsAppInvoiceLinkForEnq(enq)}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="bg-stone-900 hover:bg-stone-955 text-white rounded-xl p-1.5 text-[10px] font-black uppercase tracking-wider transition flex items-center justify-center cursor-pointer active:scale-95"
+                                        title="Send Bill Details"
+                                      >
+                                        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M8.684 10.742l4.737-2.368a1.165 1.165 0 011.037 0l4.737 2.368m-10.51 0a2.33 2.33 0 100 4.66 2.33 2.33 0 000-4.66zm10.51 0a2.33 2.33 0 100 4.66 2.33 2.33 0 000-4.66z" />
+                                        </svg>
+                                        <span className="ml-1 sm:inline">Send Bill</span>
+                                      </a>
                                     </div>
                                   </div>
-                                </div>
-                              ))
+                                ))
                             )}
                         </div>
                       </div>
-
-                      {/* Manual Payment Log List */}
-                      <div className="space-y-4 pt-4 border-t border-stone-150">
-                        <span className="text-[10px] font-extrabold text-stone-400 uppercase tracking-widest block">Manual Payment History</span>
-                        {typeof window !== 'undefined' && JSON.parse(localStorage.getItem('hd_payment_logs') || '[]')
-                          .filter((p: any) => p.dealer_phone === selectedLedgerDealer.phone_number)
-                          .length === 0 ? (
-                            <div className="text-center py-6 border border-dashed border-stone-200 rounded-2xl text-[10px] text-stone-400 font-bold uppercase">
-                              No payment transactions logged.
-                            </div>
-                          ) : (
-                            <div className="space-y-2">
-                              {JSON.parse(localStorage.getItem('hd_payment_logs') || '[]')
-                                .filter((p: any) => p.dealer_phone === selectedLedgerDealer.phone_number)
-                                .map((pay: any) => (
-                                  <div key={pay.id} className="rounded-xl border border-stone-150 bg-white p-3 flex justify-between items-center text-xs">
-                                    <div>
-                                      <span className="block font-black text-stone-900">Payment Amount: ₹{pay.amount.toLocaleString('en-IN')}/-</span>
-                                      <span className="block text-[9px] text-stone-400 mt-0.5">
-                                        Date: {new Date(pay.created_at).toLocaleString('en-IN')} | Ref: {pay.reference_bill_id === 'advance' ? 'Advance Payment' : `Bill ID: ${pay.reference_bill_id.substring(0,8).toUpperCase()}`}
-                                      </span>
-                                    </div>
-                                    <div className="flex space-x-2">
-                                      <button
-                                        onClick={() => openAlterPaymentModal(pay)}
-                                        className="p-1 hover:bg-stone-100 rounded text-stone-600 transition"
-                                        title="Alter entry"
-                                      >
-                                        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                                        </svg>
-                                      </button>
-                                      <button
-                                        onClick={() => handleDeletePayment(pay.id)}
-                                        className="p-1 hover:bg-red-50 rounded text-red-650 transition"
-                                        title="Delete entry"
-                                      >
-                                        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                                        </svg>
-                                      </button>
-                                    </div>
-                                  </div>
-                                ))}
-                            </div>
-                          )}
-                      </div>
-                      </div>
-
+                    </div>
                   )}
                 </div>
 
