@@ -2550,8 +2550,8 @@ export default function AdminDashboard() {
               <div className="space-y-2">
                 <h4 className="text-[10px] font-extrabold text-stone-400 uppercase tracking-widest block">Itemized Billing Table</h4>
                 
-                <div className="border border-stone-200 rounded-2xl overflow-hidden bg-white shadow-xs">
-                  <table className="w-full text-left border-collapse">
+                <div className="border border-stone-200 rounded-2xl overflow-x-auto bg-white shadow-xs">
+                  <table className="w-full min-w-[650px] text-left border-collapse whitespace-nowrap">
                     <thead>
                       <tr className="bg-stone-50 border-b border-stone-200 text-[10px] font-extrabold text-stone-500 uppercase tracking-wider">
                         <th className="py-3 px-4 text-center w-12">S.No</th>
