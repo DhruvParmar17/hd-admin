@@ -244,12 +244,23 @@ export default function AdminDashboard() {
 
   // --- NOTIFICATION PERMISSION STATE ---
   const [notificationPermission, setNotificationPermission] = useState<string>('default');
-  const [isAudioEnabled, setIsAudioEnabled] = useState(false);
+  const [isAudioEnabled, setIsAudioEnabled] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('hd_admin_alarm_enabled') === 'true';
+    }
+    return false;
+  });
   const pendingAlarms = useRef<Record<string, NodeJS.Timeout>>({});
 
   useEffect(() => {
     if (typeof window !== 'undefined' && 'Notification' in window) {
       setNotificationPermission(Notification.permission);
+    }
+    if (typeof window !== 'undefined') {
+      const savedAlarmState = localStorage.getItem('hd_admin_alarm_enabled') === 'true';
+      if (savedAlarmState) {
+        setIsAudioEnabled(true);
+      }
     }
   }, []);
 
@@ -318,6 +329,14 @@ export default function AdminDashboard() {
   };
 
   const requestNotificationPermission = () => {
+    if (isAudioEnabled) {
+      setIsAudioEnabled(false);
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('hd_admin_alarm_enabled', 'false');
+      }
+      return;
+    }
+
     // 1. Initialize or resume browser AudioContext to clear silent user-gesture lock
     initAudioContext();
     if (sharedAudioCtx && sharedAudioCtx.state === 'suspended') {
@@ -327,8 +346,11 @@ export default function AdminDashboard() {
     // 2. Play short test alarm chime
     playLoudAlarm();
 
-    // 3. Update local audio status state
+    // 3. Update local audio status state and persist in localStorage
     setIsAudioEnabled(true);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('hd_admin_alarm_enabled', 'true');
+    }
 
     if (typeof window !== 'undefined' && 'Notification' in window) {
       Notification.requestPermission().then((permission) => {
@@ -414,16 +436,33 @@ export default function AdminDashboard() {
           billed_amount: enq.billed_amount,
           payment_status: enq.payment_status || 'Pending',
           created_at: enq.created_at,
-          enquiry_items: (enq.enquiry_items || []).map((item: any) => ({
-            id: item.id,
-            product_name: item.products?.name || 'Plywood / Laminate',
-            product_id: item.product_id,
-            thickness: item.thickness,
-            size: item.size,
-            quantity: item.quantity,
-            quality: item.quality,
-            rate: item.rate || 0,
-          })),
+          enquiry_items: (enq.enquiry_items || []).map((item: any) => {
+            let pName = item.products?.name;
+            if (!pName || pName === 'Plywood / Laminate') {
+              if (item.product_name && item.product_name !== 'Plywood / Laminate') {
+                pName = item.product_name;
+              } else if (item.product_id) {
+                const pid = String(item.product_id).toLowerCase();
+                if (pid.includes('laminate')) pName = 'Laminate Sheet';
+                else if (pid.includes('bwr')) pName = 'BWR Grade Plywood';
+                else if (pid.includes('mr')) pName = 'Commercial MR Plywood';
+                else if (pid.includes('calibrated')) pName = 'Calibrated Plywood';
+                else pName = item.product_id;
+              } else {
+                pName = 'Plywood Sheet';
+              }
+            }
+            return {
+              id: item.id,
+              product_name: pName,
+              product_id: item.product_id,
+              thickness: item.thickness,
+              size: item.size,
+              quantity: item.quantity,
+              quality: item.quality,
+              rate: item.rate || 0,
+            };
+          }),
         };
       });
 
@@ -509,9 +548,12 @@ export default function AdminDashboard() {
             });
 
             // 2. Fire the native audio chime and device vibration side-effects here
-            playLoudAlarm();
-            if (typeof window !== 'undefined' && window.navigator && window.navigator.vibrate) {
-              window.navigator.vibrate([200, 100, 200]);
+            const isAlarmOn = isAudioEnabled || (typeof window !== 'undefined' && localStorage.getItem('hd_admin_alarm_enabled') === 'true');
+            if (isAlarmOn) {
+              playLoudAlarm();
+              if (typeof window !== 'undefined' && window.navigator && window.navigator.vibrate) {
+                window.navigator.vibrate([200, 100, 200]);
+              }
             }
 
             // Show HTML5 native push notification
@@ -1139,20 +1181,21 @@ export default function AdminDashboard() {
     }));
   };
 
-  // --- LAMINATE BILLING ENGINE LOGIC FIXED ---
+  // --- BILLING ENGINE: SINGLE EXCEPTION FOR LAMINATE (RATE × QUANTITY), STANDARD METER/FEET FOR ALL OTHER MATERIALS ---
   const calculateItemAmount = (item: EnquiryItem): number => {
-    const rate = itemRates[item.id] || 0;
+    const rate = itemRates[item.id] !== undefined ? itemRates[item.id] : (item.rate || 0);
     const qty = item.quantity;
 
-    // Check if the item category or name is Laminate
-    const isLaminate = item.product_name?.toLowerCase().includes('laminate');
+    // Material exception check: If material type is 'laminate' (case-insensitive)
+    const nameLower = (item.product_name || item.product_id || '').toLowerCase();
+    const isLaminate = nameLower.includes('laminate');
 
     if (isLaminate) {
-      // Laminate Formula: Total Quantity × Rate = Total Amount (Bypass area calculations)
+      // Laminate Formula: Rate × Quantity = Total Amount (Bypass area calculations)
       return qty * rate;
     }
 
-    // Plywood Formula remains exactly standard:
+    // For ALL other material types: exact existing meter and feet calculation engine
     const { length, width } = parseDimensions(item.size);
     if (billingMode === 'Feet') {
       return length * width * qty * rate;
@@ -1214,7 +1257,7 @@ export default function AdminDashboard() {
     setIsBillFinalized(true);
   };
 
-  // --- DIGITAL BILL IMAGE GENERATION & DOWNLOAD ---
+  // --- DIGITAL BILL IMAGE GENERATION & MOBILE DOWNLOAD FIX ---
   const handleGenerateInvoiceImage = async () => {
     if (!invoiceCaptureRef.current || !activeBillingEnquiry) return;
     setIsCapturingBill(true);
@@ -1238,33 +1281,44 @@ export default function AdminDashboard() {
       
       document.body.removeChild(clone);
 
-      // Convert to image download link or share
-      const imageURL = canvas.toDataURL('image/png');
-      
-      // Try sharing first if navigator.share exists (excellent for mobile)
-      if (navigator.share && navigator.canShare) {
-        try {
-          const blob = await (await fetch(imageURL)).blob();
-          const file = new File([blob], `HD-PLY-Invoice-${activeBillingEnquiry.id.substring(0, 8).toUpperCase()}.png`, { type: 'image/png' });
-          if (navigator.canShare({ files: [file] })) {
-            await navigator.share({
-              files: [file],
-              title: 'HD PLY Invoice',
-              text: `Invoice for ${activeBillingEnquiry.dealer_name}`
-            });
-            return;
-          }
-        } catch (shareErr) {
-          console.warn('Native share failed, falling back to download:', shareErr);
-        }
-      }
+      const fileName = `HD-PLY-Invoice-${activeBillingEnquiry.id.substring(0, 8).toUpperCase()}.png`;
 
-      const downloadLink = document.createElement('a');
-      downloadLink.href = imageURL;
-      downloadLink.download = `HD-PLY-Invoice-${activeBillingEnquiry.id.substring(0, 8).toUpperCase()}.png`;
-      document.body.appendChild(downloadLink);
-      downloadLink.click();
-      document.body.removeChild(downloadLink);
+      // Convert canvas to Blob ObjectURL for direct mobile photo gallery saving
+      canvas.toBlob(async (blob) => {
+        if (!blob) return;
+
+        // Try Web Share API first (Best for iOS Photos & Android Gallery direct save)
+        if (navigator.share && navigator.canShare) {
+          try {
+            const file = new File([blob], fileName, { type: 'image/png' });
+            if (navigator.canShare({ files: [file] })) {
+              await navigator.share({
+                files: [file],
+                title: 'HD PLY Invoice',
+                text: `Invoice for ${activeBillingEnquiry.dealer_name}`
+              });
+              return;
+            }
+          } catch (shareErr) {
+            console.warn('Native share failed, falling back to blob download:', shareErr);
+          }
+        }
+
+        // Direct Mobile & Desktop Blob URL Download
+        const blobUrl = URL.createObjectURL(blob);
+        const downloadLink = document.createElement('a');
+        downloadLink.href = blobUrl;
+        downloadLink.download = fileName;
+        downloadLink.target = '_blank';
+        document.body.appendChild(downloadLink);
+        downloadLink.click();
+        
+        setTimeout(() => {
+          document.body.removeChild(downloadLink);
+          URL.revokeObjectURL(blobUrl);
+        }, 1000);
+      }, 'image/png', 1.0);
+
     } catch (err) {
       console.error('Failed to generate high-resolution invoice image:', err);
     } finally {
@@ -1391,6 +1445,8 @@ export default function AdminDashboard() {
 
   const handleLogoutAdmin = () => {
     sessionStorage.removeItem('hd_admin_auth');
+    localStorage.removeItem('hd_admin_alarm_enabled');
+    setIsAudioEnabled(false);
     setIsAuthenticated(false);
   };
 
@@ -1711,11 +1767,16 @@ export default function AdminDashboard() {
                             {(enq.enquiry_items || []).map((item) => {
                               const isLaminate = item.product_name?.toLowerCase().includes('laminate');
                               return (
-                                <div key={item.id} className="rounded-xl border border-stone-100 bg-stone-50/50 p-2.5 flex items-center justify-between text-xs font-semibold">
+                                <div key={item.id} className="rounded-xl border border-stone-200/70 bg-white p-3 flex items-center justify-between text-xs font-semibold shadow-2xs">
                                   <div>
-                                    <span className="font-bold text-stone-850 block">{item.product_name}</span>
-                                    <span className="text-[10px] text-stone-500 mt-0.5 block">
-                                      thickness: <strong>{item.thickness}</strong> | size: <strong>{item.size} ft</strong>{item.quality ? ` | quality: <strong>${item.quality}</strong>` : ''}
+                                    <div className="flex items-center space-x-2 flex-wrap gap-y-1">
+                                      <span className="font-black text-stone-900 block">{item.product_name}</span>
+                                      <span className="text-[9px] font-extrabold text-amber-900 bg-amber-50 border border-amber-200/70 rounded px-1.5 py-0.5 uppercase tracking-wider">
+                                        Material: {isLaminate ? 'Laminate' : item.product_name}
+                                      </span>
+                                    </div>
+                                    <span className="text-[10px] text-stone-500 mt-1 block">
+                                      Thickness: <strong>{item.thickness}</strong> | Size: <strong>{item.size} ft</strong>{item.quality ? ` | Quality: <strong>${item.quality}</strong>` : ''}
                                     </span>
                                     {!isLaminate && (
                                       <span className="text-[9px] text-stone-400 block mt-0.5 animate-pop">
@@ -1723,7 +1784,7 @@ export default function AdminDashboard() {
                                       </span>
                                     )}
                                   </div>
-                                  <span className="text-amber-800 font-bold shrink-0">{item.quantity} sheets</span>
+                                  <span className="text-amber-800 font-extrabold text-xs shrink-0 bg-amber-50 border border-amber-100/60 rounded-lg px-2 py-1">{item.quantity} sheets</span>
                                 </div>
                               );
                             })}
@@ -2569,8 +2630,13 @@ export default function AdminDashboard() {
                           <tr key={item.id} className="hover:bg-stone-50/40">
                             <td className="py-3.5 px-4 text-center text-stone-400">{idx + 1}</td>
                             <td className="py-3.5 px-3">
-                              <span className="font-bold text-stone-900 block">{item.product_name}</span>
-                              <span className="text-[10px] text-stone-400 block mt-0.5">Thickness/Grade: {item.thickness}{item.quality ? ` | Quality: ${item.quality}` : ''}</span>
+                              <div className="flex items-center space-x-2">
+                                <span className="font-bold text-stone-900 block">{item.product_name}</span>
+                                <span className="text-[9px] font-extrabold text-amber-900 bg-amber-50 border border-amber-200/70 rounded px-1.5 py-0.5 uppercase tracking-wider">
+                                  Material: {item.product_name}
+                                </span>
+                              </div>
+                              <span className="text-[10px] text-stone-500 block mt-0.5">Thickness/Grade: {item.thickness}{item.quality ? ` | Quality: ${item.quality}` : ''}</span>
                             </td>
                             <td className="py-3.5 px-3">
                               <span className="bg-stone-100 border border-stone-200/50 rounded px-2 py-0.5 text-stone-700">
