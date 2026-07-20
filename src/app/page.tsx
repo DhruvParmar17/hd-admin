@@ -1264,61 +1264,122 @@ export default function AdminDashboard() {
     setIsBillFinalized(true);
   };
 
-  // --- DIGITAL BILL IMAGE GENERATION & MOBILE GALLERY DOWNLOAD FIX ---
+  // --- ROBUST INVOICE GENERATION & MOBILE DOWNLOAD ENGINE ---
   const handleGenerateInvoiceImage = async () => {
-    if (!invoiceCaptureRef.current || !activeBillingEnquiry) return;
+    if (!activeBillingEnquiry) return;
     setIsCapturingBill(true);
     try {
-      const element = invoiceCaptureRef.current;
-      const canvas = await html2canvas(element, {
-        scale: 2,
-        useCORS: true,
-        allowTaint: true,
-        backgroundColor: '#ffffff',
-        logging: false,
-        onclone: (clonedDoc) => {
-          const clonedElement = clonedDoc.getElementById('hd-ply-invoice-capture');
-          if (clonedElement) {
-            clonedElement.style.display = 'block';
-            clonedElement.style.visibility = 'visible';
-            clonedElement.style.maxHeight = 'none';
-            clonedElement.style.overflow = 'visible';
-            clonedElement.style.width = '450px';
-          }
-        }
+      const items = activeBillingEnquiry.enquiry_items || [];
+      const subtotal = getItemsSubtotal();
+      const transportAmt = addTransport ? transportFee : 0;
+      const gstAmt = addGst ? Math.round((subtotal + transportAmt) * 0.18) : 0;
+      const refId = activeBillingEnquiry.id.substring(0, 8).toUpperCase();
+      const fileName = `HD-PLY-Invoice-${refId}.html`;
+      const dateStr = new Date().toLocaleDateString('en-IN');
+
+      let itemsRows = '';
+      items.forEach((item, idx) => {
+        const amt = calculateItemAmount(item);
+        const rate = itemRates[item.id] !== undefined ? itemRates[item.id] : (item.rate || 0);
+        itemsRows += `
+          <tr style="border-bottom: 1px solid #e7e5e4;">
+            <td style="padding: 10px; text-align: center; font-weight: bold; color: #57534e;">${idx + 1}</td>
+            <td style="padding: 10px; font-weight: bold; color: #0c0a09;">
+              ${item.product_name}
+              <div style="font-size: 10px; color: #78716c; font-weight: normal; margin-top: 2px;">
+                ${item.size} ft | ${item.thickness} ${item.quality ? `| ${item.quality}` : ''}
+              </div>
+            </td>
+            <td style="padding: 10px; text-align: center; font-weight: bold;">${item.quantity}</td>
+            <td style="padding: 10px; text-align: right; font-weight: bold;">₹${rate}</td>
+            <td style="padding: 10px; text-align: right; font-weight: bold;">₹${Math.round(amt).toLocaleString('en-IN')}</td>
+          </tr>
+        `;
       });
 
-      const fileName = `HD-PLY-Invoice-${activeBillingEnquiry.id.substring(0, 8).toUpperCase()}.png`;
-      const dataUrl = canvas.toDataURL('image/png', 1.0);
+      const htmlDocument = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HD PLYWOOD - Tax Invoice Receipt ${refId}</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #fafaf9; color: #0c0a09; margin: 0; padding: 16px; }
+    .invoice-card { max-width: 550px; margin: 0 auto; border: 3px solid #0c0a09; padding: 20px; border-radius: 16px; background: #ffffff; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1); }
+    .header { text-align: center; font-size: 22px; font-weight: 900; letter-spacing: 2px; border-bottom: 3px solid #0c0a09; padding-bottom: 10px; margin-bottom: 14px; text-transform: uppercase; }
+    .meta-table { width: 100%; border-bottom: 2px solid #0c0a09; padding-bottom: 10px; margin-bottom: 14px; font-size: 11px; font-weight: 800; text-transform: uppercase; }
+    .items-table { width: 100%; border-collapse: collapse; margin-bottom: 14px; font-size: 12px; }
+    .items-table th { background: #f5f5f4; border-bottom: 2px solid #0c0a09; padding: 8px; text-align: left; font-size: 10px; font-weight: 900; text-transform: uppercase; }
+    .totals { border-top: 2px solid #0c0a09; padding-top: 10px; font-size: 12px; font-weight: 800; }
+    .grand-total { border-top: 3px double #0c0a09; margin-top: 8px; padding-top: 8px; font-size: 15px; font-weight: 900; display: flex; justify-content: space-between; color: #92400e; }
+  </style>
+</head>
+<body>
+  <div class="invoice-card">
+    <div class="header">HD PLYWOOD</div>
+    <table class="meta-table">
+      <tr>
+        <td style="vertical-align: top;">
+          <div><strong>Dealer Name:</strong> ${activeBillingEnquiry.dealer_name}</div>
+          <div><strong>Phone Number:</strong> ${activeBillingEnquiry.dealer_phone}</div>
+          <div><strong>Calculation:</strong> ${billingMode} Mode</div>
+        </td>
+        <td style="vertical-align: top; text-align: right;">
+          <div><strong>Ref Order ID:</strong> ${refId}</div>
+          <div><strong>Invoice Date:</strong> ${dateStr}</div>
+          <div><strong>Status:</strong> ${activeBillingEnquiry.payment_status || 'Pending'}</div>
+        </td>
+      </tr>
+    </table>
+    <table class="items-table">
+      <thead>
+        <tr>
+          <th style="text-align: center; width: 30px;">#</th>
+          <th>Item Detail</th>
+          <th style="text-align: center; width: 50px;">Qty</th>
+          <th style="text-align: right; width: 70px;">Rate</th>
+          <th style="text-align: right; width: 90px;">Amount</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${itemsRows}
+      </tbody>
+    </table>
+    <div class="totals">
+      <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+        <span>Items Subtotal:</span>
+        <span>₹${Math.round(subtotal).toLocaleString('en-IN')}/-</span>
+      </div>
+      ${addTransport ? `<div style="display: flex; justify-content: space-between; margin-bottom: 4px;"><span>Transport Charge:</span><span>₹${transportAmt.toLocaleString('en-IN')}/-</span></div>` : ''}
+      ${addGst ? `<div style="display: flex; justify-content: space-between; margin-bottom: 4px;"><span>GST (18%):</span><span>₹${gstAmt.toLocaleString('en-IN')}/-</span></div>` : ''}
+      <div class="grand-total">
+        <span>Grand Total:</span>
+        <span>₹${finalGrandTotal.toLocaleString('en-IN')}/-</span>
+      </div>
+    </div>
+  </div>
+</body>
+</html>`;
 
-      const arr = dataUrl.split(',');
-      const mime = arr[0].match(/:(.*?);/)?.[1] || 'image/png';
-      const bstr = atob(arr[1]);
-      let n = bstr.length;
-      const u8arr = new Uint8Array(n);
-      while (n--) {
-        u8arr[n] = bstr.charCodeAt(n);
-      }
-      const blob = new Blob([u8arr], { type: mime });
+      const blob = new Blob([htmlDocument], { type: 'text/html;charset=utf-8' });
 
-      // Try Native Mobile Share API first (Saves PNG image directly to Mobile Photo Gallery / Files)
+      // Native System Download Prompt on iOS Safari & Android Chrome
       if (typeof window !== 'undefined' && window.navigator && window.navigator.share) {
         try {
-          const file = new File([blob], fileName, { type: 'image/png' });
+          const file = new File([blob], fileName, { type: 'text/html' });
           if (window.navigator.canShare && window.navigator.canShare({ files: [file] })) {
             await window.navigator.share({
               files: [file],
-              title: 'HD PLYWOOD Tax Invoice Image',
-              text: `Tax Invoice Image for ${activeBillingEnquiry.dealer_name}`
+              title: `HD PLYWOOD Tax Invoice ${refId}`,
+              text: `Tax Invoice for ${activeBillingEnquiry.dealer_name}`
             });
             return;
           }
         } catch (shareErr) {
-          console.warn('Native mobile share failed, falling back to direct download link:', shareErr);
+          console.warn('Native document share failed, falling back to direct blob download:', shareErr);
         }
       }
 
-      // Direct Mobile & Desktop Blob Download Trigger
       const blobUrl = URL.createObjectURL(blob);
       const downloadLink = document.createElement('a');
       downloadLink.href = blobUrl;
@@ -1327,25 +1388,25 @@ export default function AdminDashboard() {
       downloadLink.target = '_blank';
       document.body.appendChild(downloadLink);
       downloadLink.click();
-      
+
       setTimeout(() => {
         document.body.removeChild(downloadLink);
         URL.revokeObjectURL(blobUrl);
       }, 1000);
 
     } catch (err) {
-      console.error('Failed to generate high-resolution invoice image:', err);
-      alert('Could not render invoice image. Please try again.');
+      console.error('Failed to generate robust invoice document:', err);
+      alert('Error generating invoice document download.');
     } finally {
       setIsCapturingBill(false);
     }
   };
 
   const handleSendInvoiceAsImageToWhatsApp = async () => {
-    if (!invoiceCaptureRef.current || !activeBillingEnquiry) return;
+    if (!activeBillingEnquiry) return;
     setIsCapturingBill(true);
     try {
-      // 1. Mark status as 'Sent' in Supabase
+      // 1. Update status to Sent in Supabase
       const { error } = await supabase
         .from('enquiries')
         .update({ status: 'Sent' })
@@ -1355,78 +1416,59 @@ export default function AdminDashboard() {
         setEnquiries(prev => prev.map(e => e.id === activeBillingEnquiry.id ? { ...e, status: 'Sent' } : e));
       }
 
-      // 2. Render invoice element directly
-      const element = invoiceCaptureRef.current;
-      const canvas = await html2canvas(element, {
-        scale: 2,
-        useCORS: true,
-        allowTaint: true,
-        backgroundColor: '#ffffff',
-        logging: false,
-        onclone: (clonedDoc) => {
-          const clonedElement = clonedDoc.getElementById('hd-ply-invoice-capture');
-          if (clonedElement) {
-            clonedElement.style.display = 'block';
-            clonedElement.style.visibility = 'visible';
-            clonedElement.style.maxHeight = 'none';
-            clonedElement.style.overflow = 'visible';
-            clonedElement.style.width = '450px';
-          }
-        }
+      const items = activeBillingEnquiry.enquiry_items || [];
+      const refId = activeBillingEnquiry.id.substring(0, 8).toUpperCase();
+      const cleanPhone = activeBillingEnquiry.dealer_phone.replace(/[^0-9]/g, '');
+
+      // Build structured invoice text payload for WhatsApp chat
+      let itemSummaryText = '';
+      items.forEach((item, idx) => {
+        const rate = itemRates[item.id] !== undefined ? itemRates[item.id] : (item.rate || 0);
+        itemSummaryText += `\n${idx + 1}. *${item.product_name}* (${item.thickness}, ${item.size} ft) x ${item.quantity} Pcs @ ₹${rate}/-`;
       });
 
-      const fileName = `HD-PLY-Invoice-${activeBillingEnquiry.id.substring(0, 8).toUpperCase()}.png`;
-      const dataUrl = canvas.toDataURL('image/png', 1.0);
+      const fullMessageText = `*HD PLYWOOD - TAX INVOICE RECEIPT*\n` +
+        `-----------------------------------------\n` +
+        `*Ref Order ID:* ${refId}\n` +
+        `*Customer/Dealer:* ${activeBillingEnquiry.dealer_name}\n` +
+        `*Phone:* ${activeBillingEnquiry.dealer_phone}\n` +
+        `*Location:* ${activeBillingEnquiry.delivery_location}\n` +
+        `*Date:* ${new Date().toLocaleDateString('en-IN')}\n` +
+        `-----------------------------------------\n` +
+        `*Itemized Breakdown:*${itemSummaryText}\n` +
+        `-----------------------------------------\n` +
+        `*Total Billed Amount:* ₹${finalGrandTotal.toLocaleString('en-IN')}/-\n` +
+        `*Payment Status:* ${activeBillingEnquiry.payment_status || 'Pending'}\n\n` +
+        `Thank you for doing business with HD PLYWOOD!`;
 
-      const arr = dataUrl.split(',');
-      const mime = arr[0].match(/:(.*?);/)?.[1] || 'image/png';
-      const bstr = atob(arr[1]);
-      let n = bstr.length;
-      const u8arr = new Uint8Array(n);
-      while (n--) {
-        u8arr[n] = bstr.charCodeAt(n);
-      }
-      const blob = new Blob([u8arr], { type: mime });
+      // Trigger Web Push Notification / Native Share if available
+      const htmlDocument = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Invoice ${refId}</title></head><body><pre>${fullMessageText}</pre></body></html>`;
+      const blob = new Blob([htmlDocument], { type: 'text/html;charset=utf-8' });
+      const fileName = `HD-PLY-Invoice-${refId}.html`;
 
-      // 3. Try Native Share Registry with PNG image file (Attaches PNG image file directly to WhatsApp on Mobile)
       if (typeof window !== 'undefined' && window.navigator && window.navigator.share) {
         try {
-          const file = new File([blob], fileName, { type: 'image/png' });
+          const file = new File([blob], fileName, { type: 'text/html' });
           if (window.navigator.canShare && window.navigator.canShare({ files: [file] })) {
             await window.navigator.share({
               files: [file],
-              title: 'HD PLYWOOD Tax Invoice Image',
-              text: `Tax Invoice Image for ${activeBillingEnquiry.dealer_name}`
+              title: `HD PLYWOOD Invoice ${refId}`,
+              text: fullMessageText
             });
             return;
           }
         } catch (shareErr) {
-          console.warn('Native share of image failed, falling back:', shareErr);
+          console.warn('Native share failed, launching WhatsApp Web fallback:', shareErr);
         }
       }
 
-      // Web Fallback: Create Blob download and open WhatsApp Web
-      const blobUrl = URL.createObjectURL(blob);
-      const downloadLink = document.createElement('a');
-      downloadLink.href = blobUrl;
-      downloadLink.download = fileName;
-      downloadLink.target = '_blank';
-      document.body.appendChild(downloadLink);
-      downloadLink.click();
-      
-      setTimeout(() => {
-        document.body.removeChild(downloadLink);
-        URL.revokeObjectURL(blobUrl);
-      }, 1000);
-
-      const cleanPhone = activeBillingEnquiry.dealer_phone.replace(/[^0-9]/g, '');
-      const text = `HD PLYWOOD - Attached is your Tax Invoice Image (${fileName}). Total Billed: ₹${finalGrandTotal}/-`;
-      const waUrl = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(text)}`;
+      // Launch WhatsApp Web URL
+      const waUrl = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(fullMessageText)}`;
       window.open(waUrl, '_blank', 'noopener,noreferrer');
 
     } catch (err) {
-      console.error('Failed to send invoice image to WhatsApp:', err);
-      alert('Could not capture invoice image for WhatsApp. Please try again.');
+      console.error('Failed to send invoice to WhatsApp:', err);
+      alert('Could not dispatch WhatsApp invoice.');
     } finally {
       setIsCapturingBill(false);
     }
