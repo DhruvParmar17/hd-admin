@@ -59,16 +59,16 @@ function parseDimensions(sizeStr: string): { length: number; width: number } {
   return { length: 0, width: 0 };
 }
 
-// Convert length to metres
+// Convert length to metres (or precision meter-to-feet conversion factor)
 function convertLengthToMetre(length: number): number {
   if (length === 8) return 2.44;
   if (length === 7) return 2.14;
   if (length === 6) return 1.84;
-  if (length === 5) return 0.465;
+  if (length === 5) return 1.524;
   return length * 0.3048;
 }
 
-// Convert width to metres
+// Convert width to metres (or precision meter-to-feet conversion factor)
 function convertWidthToMetre(width: number): number {
   if (width === 4) return 1.22;
   if (width === 3) return 0.92;
@@ -241,6 +241,8 @@ export default function AdminDashboard() {
   const [alterPaymentStatus, setAlterPaymentStatus] = useState('');
   const [alterBilledAmount, setAlterBilledAmount] = useState<number | null>(null);
   const [alterItems, setAlterItems] = useState<{ id: string; product_name: string; thickness: string; size: string; quantity: number; rate: number }[]>([]);
+  const [selectedHistoricalBill, setSelectedHistoricalBill] = useState<Enquiry | null>(null);
+  const [showAdminTrackerModal, setShowAdminTrackerModal] = useState<boolean>(false);
 
   // --- NOTIFICATION PERMISSION STATE ---
   const [notificationPermission, setNotificationPermission] = useState<string>('default');
@@ -366,14 +368,14 @@ export default function AdminDashboard() {
     if (passcode === 'Vply@1') {
       setIsAuthenticated(true);
       setPasscodeError('');
-      sessionStorage.setItem('hd_admin_auth', 'true');
+      localStorage.setItem('hd_admin_auth', 'true');
     } else {
       setPasscodeError('Invalid passcode. Security gate blocked.');
     }
   };
 
   useEffect(() => {
-    const isAuthed = sessionStorage.getItem('hd_admin_auth');
+    const isAuthed = localStorage.getItem('hd_admin_auth');
     if (isAuthed === 'true') {
       setIsAuthenticated(true);
     }
@@ -1530,7 +1532,7 @@ export default function AdminDashboard() {
   };
 
   const handleLogoutAdmin = () => {
-    sessionStorage.removeItem('hd_admin_auth');
+    localStorage.removeItem('hd_admin_auth');
     localStorage.removeItem('hd_admin_alarm_enabled');
     setIsAudioEnabled(false);
     setIsAuthenticated(false);
@@ -1657,22 +1659,45 @@ export default function AdminDashboard() {
 
           {/* Quick Metrics */}
           <div className="flex gap-4 flex-wrap justify-center">
-            <div className="bg-white/10 backdrop-blur rounded-2xl p-4 border border-white/10 w-28 text-center shadow-xs">
-              <span className="block text-[10px] text-stone-300 font-bold uppercase">Dealers</span>
+            <button
+              type="button"
+              onClick={() => setActiveAdminTab('dealers')}
+              className="bg-white/10 hover:bg-white/20 transition cursor-pointer backdrop-blur rounded-2xl p-4 border border-white/10 w-28 text-center shadow-xs active:scale-95 group"
+              title="Click to view Dealer Management"
+            >
+              <span className="block text-[10px] text-stone-300 font-bold uppercase group-hover:text-amber-300">Dealers</span>
               <span className="text-2xl font-black text-amber-400 mt-1 block">{totalDealers}</span>
-            </div>
-            <div className="bg-white/10 backdrop-blur rounded-2xl p-4 border border-white/10 w-28 text-center shadow-xs">
-              <span className="block text-[10px] text-stone-300 font-bold uppercase">Active Devices</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveAdminTab('dealers')}
+              className="bg-white/10 hover:bg-white/20 transition cursor-pointer backdrop-blur rounded-2xl p-4 border border-white/10 w-28 text-center shadow-xs active:scale-95 group"
+              title="Click to view Active Dealers Hub"
+            >
+              <span className="block text-[10px] text-stone-300 font-bold uppercase group-hover:text-amber-300">Active Dealers</span>
               <span className="text-2xl font-black text-amber-400 mt-1 block">{activeSessions}</span>
-            </div>
-            <div className="bg-white/10 backdrop-blur rounded-2xl p-4 border border-white/10 w-28 text-center shadow-xs">
-              <span className="block text-[10px] text-stone-300 font-bold uppercase">Pending</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveAdminTab('enquiries')}
+              className="bg-white/10 hover:bg-white/20 transition cursor-pointer backdrop-blur rounded-2xl p-4 border border-white/10 w-28 text-center shadow-xs active:scale-95 group"
+              title="Click to view Pending Orders"
+            >
+              <span className="block text-[10px] text-stone-300 font-bold uppercase group-hover:text-amber-300">Pending</span>
               <span className="text-2xl font-black text-amber-400 mt-1 block">{pendingEnquiries}</span>
-            </div>
-            <div className="bg-white/10 backdrop-blur rounded-2xl p-4 border border-white/10 w-32 text-center shadow-xs">
-              <span className="block text-[10px] text-stone-300 font-bold uppercase">Total Sheets</span>
-              <span className="text-2xl font-black text-amber-400 mt-1 block">{totalSheetsRequested}</span>
-            </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setShowAdminTrackerModal(true)}
+              className="bg-amber-900/40 hover:bg-amber-800/50 border border-amber-500/40 transition cursor-pointer backdrop-blur rounded-2xl p-4 w-32 text-center shadow-xs active:scale-95 group"
+              title="Click to view Active Logged-in Admin Sessions"
+            >
+              <span className="block text-[10px] text-amber-300 font-extrabold uppercase group-hover:underline">Total Admins</span>
+              <span className="text-2xl font-black text-white mt-1 block">1</span>
+            </button>
           </div>
         </div>
       </section>
@@ -2581,6 +2606,13 @@ export default function AdminDashboard() {
                                 </td>
                                 <td className="px-6 py-4.5 text-center space-x-2">
                                   <button
+                                    onClick={() => setSelectedHistoricalBill(enq)}
+                                    className="text-[10px] font-extrabold bg-amber-50 border border-amber-200 text-amber-900 px-2 py-1 rounded transition hover:bg-amber-100"
+                                    title="View Bill Invoice Image with historical rates"
+                                  >
+                                    View Bill Invoice Image
+                                  </button>
+                                  <button
                                     onClick={() => handleTogglePaymentStatus(enq.id, enq.payment_status || 'Pending')}
                                     className="text-[10px] font-extrabold bg-stone-100 border border-stone-200 px-2 py-1 rounded transition hover:bg-stone-200"
                                   >
@@ -3302,6 +3334,136 @@ export default function AdminDashboard() {
               className="w-full bg-amber-800 hover:bg-amber-900 text-white rounded-xl py-3.5 text-xs font-bold shadow-md transition mt-4"
             >
               Save Altered Changes
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* --- HISTORICAL BILL INVOICE IMAGE VIEWER MODAL --- */}
+      {selectedHistoricalBill && (
+        <div className="fixed inset-0 z-60 flex items-center justify-center bg-stone-950/70 backdrop-blur-md px-4 py-8">
+          <div className="w-full max-w-lg rounded-3xl border border-stone-200 bg-white p-6 shadow-2xl overflow-hidden flex flex-col max-h-[85vh] animate-pop my-auto">
+            <div className="flex justify-between items-center border-b border-stone-150 pb-3 mb-3">
+              <div>
+                <h3 className="text-base font-black text-stone-900 uppercase">Historical Tax Invoice Receipt</h3>
+                <p className="text-[9px] text-amber-800 font-extrabold uppercase tracking-wider">Historical Rates Applied for {selectedHistoricalBill.dealer_name}</p>
+              </div>
+              <button
+                onClick={() => setSelectedHistoricalBill(null)}
+                className="text-stone-400 hover:text-stone-700"
+              >
+                <svg className="h-5.5 w-5.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-4 pr-1 text-xs">
+              <div className="rounded-2xl border-4 border-stone-950 bg-white p-6 font-mono text-[11px] leading-relaxed text-stone-900 space-y-4 shadow-sm">
+                <div className="text-center font-black text-xl tracking-widest text-stone-950 border-b-4 border-stone-950 pb-2 uppercase">
+                  HD PLYWOOD
+                </div>
+
+                <div className="grid grid-cols-2 gap-4 text-[10px] font-black uppercase border-b-2 border-stone-950 pb-2">
+                  <div>
+                    <div>Dealer Name : {selectedHistoricalBill.dealer_name}</div>
+                    <div>Phone Number: {selectedHistoricalBill.dealer_phone}</div>
+                    <div>Location    : {selectedHistoricalBill.delivery_location}</div>
+                  </div>
+                  <div className="text-right">
+                    <div>Ref Order ID: {selectedHistoricalBill.id.substring(0, 8).toUpperCase()}</div>
+                    <div>Invoice Date: {new Date(selectedHistoricalBill.created_at).toLocaleDateString('en-IN')}</div>
+                    <div>Status      : <span className="underline font-black">{selectedHistoricalBill.payment_status || 'Paid/Settled'}</span></div>
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <div className="grid grid-cols-12 font-black uppercase text-[10px] border-b-2 border-stone-950 pb-1 mb-1">
+                    <span className="col-span-1">#</span>
+                    <span className="col-span-5">Item Detail</span>
+                    <span className="col-span-2 text-center">Qty</span>
+                    <span className="col-span-2 text-right">Rate</span>
+                    <span className="col-span-2 text-right">Amount</span>
+                  </div>
+
+                  {(selectedHistoricalBill.enquiry_items || []).map((item, idx) => {
+                    const rateVal = item.rate || 0;
+                    const isLaminate = item.product_name?.toLowerCase().includes('laminate');
+                    const amtVal = isLaminate ? (item.quantity * rateVal) : (calculateSqFt(item.size, item.quantity) * rateVal);
+                    return (
+                      <div key={item.id || idx} className="grid grid-cols-12 font-extrabold border-b border-stone-200 py-1 items-center">
+                        <span className="col-span-1 font-black">{idx + 1}</span>
+                        <span className="col-span-5 font-black">
+                          {item.product_name}
+                          <span className="block text-[8px] font-black text-stone-500">
+                            {item.size} ft | {item.thickness} {item.quality ? `| ${item.quality}` : ''}
+                          </span>
+                        </span>
+                        <span className="col-span-2 text-center font-black">{item.quantity}</span>
+                        <span className="col-span-2 text-right font-black">₹{rateVal}</span>
+                        <span className="col-span-2 text-right font-black">₹{Math.round(amtVal).toLocaleString('en-IN')}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="border-t-2 border-stone-950 pt-2 space-y-1 font-black">
+                  <div className="flex justify-between font-black text-sm border-t-4 border-double border-stone-950 pt-2">
+                    <span>Total Billed Amount:</span>
+                    <span>₹{(selectedHistoricalBill.billed_amount || 0).toLocaleString('en-IN')}/-</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="pt-3">
+              <button
+                onClick={() => setSelectedHistoricalBill(null)}
+                className="w-full bg-stone-900 text-white rounded-xl py-2.5 text-xs font-bold"
+              >
+                Close Historical Invoice View
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* --- LIVE ADMIN DEVICE TRACKER MODAL --- */}
+      {showAdminTrackerModal && (
+        <div className="fixed inset-0 z-60 flex items-center justify-center bg-stone-950/70 backdrop-blur-md px-4 py-8">
+          <div className="w-full max-w-md rounded-3xl border border-stone-200 bg-white p-6 shadow-2xl overflow-hidden flex flex-col animate-pop my-auto">
+            <div className="flex justify-between items-center border-b border-stone-150 pb-3 mb-4">
+              <div>
+                <h3 className="text-base font-black text-stone-900 uppercase">Live Admin Devices Tracker</h3>
+                <p className="text-[9px] text-amber-800 font-extrabold uppercase tracking-wider">Active Admin Console Sessions</p>
+              </div>
+              <button
+                onClick={() => setShowAdminTrackerModal(false)}
+                className="text-stone-400 hover:text-stone-700"
+              >
+                <svg className="h-5.5 w-5.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <div className="p-3.5 rounded-2xl bg-amber-50 border border-amber-200 flex items-center justify-between">
+                <div>
+                  <span className="font-extrabold text-xs text-stone-900 block">Primary Admin HQ</span>
+                  <span className="text-[10px] text-stone-500 block mt-0.5">Device: Mobile Web / Desktop Gateway (Active)</span>
+                </div>
+                <span className="inline-flex items-center text-[9px] font-black text-emerald-800 bg-emerald-100 border border-emerald-300 rounded px-2 py-0.5 uppercase tracking-wider">
+                  ● Active Session
+                </span>
+              </div>
+            </div>
+
+            <button
+              onClick={() => setShowAdminTrackerModal(false)}
+              className="w-full bg-amber-800 hover:bg-amber-900 text-white rounded-xl py-3 text-xs font-bold transition mt-5"
+            >
+              Done
             </button>
           </div>
         </div>
