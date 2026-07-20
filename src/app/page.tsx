@@ -498,84 +498,89 @@ export default function AdminDashboard() {
           console.log('Real-time database insert event received:', payload);
           if (payload.new.status === 'Cancelled') return;
 
-          const elapsed = (Date.now() - new Date(payload.new.created_at).getTime()) / 1000;
-          const remainingMs = Math.max(0, (30 - elapsed) * 1000);
-
-          console.log(`Scheduling alarm for enquiry ${payload.new.id} in ${remainingMs}ms...`);
-
-          // Clear any existing timeout for this ID
-          if (pendingAlarms.current[payload.new.id]) {
-            clearTimeout(pendingAlarms.current[payload.new.id]);
+          // 1. Instantly trigger loud alarm chime, vibration, push notification, and banner
+          const isAlarmOn = isAudioEnabled || (typeof window !== 'undefined' && localStorage.getItem('hd_admin_alarm_enabled') === 'true');
+          if (isAlarmOn) {
+            playLoudAlarm();
+            if (typeof window !== 'undefined' && window.navigator && window.navigator.vibrate) {
+              window.navigator.vibrate([200, 100, 200]);
+            }
           }
 
-          pendingAlarms.current[payload.new.id] = setTimeout(async () => {
-            delete pendingAlarms.current[payload.new.id];
+          // Show HTML5 native push notification
+          if ('Notification' in window && Notification.permission === 'granted') {
+            new Notification('New Live HD PLY Order!', {
+              body: `Incoming enquiry from ${payload.new.dealer_name}.`,
+              icon: '/favicon.ico'
+            });
+          }
 
-            // Verify the status is not Cancelled in the database
+          // Set visual alert banner
+          setNewEnquiryAlert({
+            visible: true,
+            dealerName: payload.new.dealer_name,
+            id: payload.new.id,
+          });
+
+          // 2. Fetch order items & snap new enquiry card onto dashboard immediately
+          (async () => {
             try {
-              const { data, error } = await supabase
-                .from('enquiries')
-                .select('status')
-                .eq('id', payload.new.id)
-                .maybeSingle();
+              const { data: itemsData } = await supabase
+                .from('enquiry_items')
+                .select('*, products(name)')
+                .eq('enquiry_id', payload.new.id);
 
-              if (data && data.status === 'Cancelled') {
-                console.log('Enquiry was cancelled during countdown. Alarm skipped.');
-                return;
-              }
-            } catch (e) {
-              console.error('Failed to verify enquiry cancellation state:', e);
-            }
-
-            // 1. Force the new order card to instantly snap onto the visible dashboard
-            const newEnq: Enquiry = {
-              id: payload.new.id,
-              dealer_name: payload.new.dealer_name,
-              dealer_phone: payload.new.dealer_phone,
-              company_name: payload.new.company_name,
-              delivery_location: payload.new.delivery_location,
-              comments: payload.new.comments || '',
-              status: payload.new.status,
-              billed_amount: payload.new.billed_amount || null,
-              payment_status: payload.new.payment_status || 'Pending',
-              created_at: payload.new.created_at,
-              enquiry_items: []
-            };
-
-            setEnquiries((prev) => {
-              if (prev.some((e) => e.id === newEnq.id)) return prev;
-              return [newEnq, ...prev];
-            });
-
-            // 2. Fire the native audio chime and device vibration side-effects here
-            const isAlarmOn = isAudioEnabled || (typeof window !== 'undefined' && localStorage.getItem('hd_admin_alarm_enabled') === 'true');
-            if (isAlarmOn) {
-              playLoudAlarm();
-              if (typeof window !== 'undefined' && window.navigator && window.navigator.vibrate) {
-                window.navigator.vibrate([200, 100, 200]);
-              }
-            }
-
-            // Show HTML5 native push notification
-            if ('Notification' in window && Notification.permission === 'granted') {
-              new Notification('New Live HD PLY Order!', {
-                body: `Incoming enquiry from ${payload.new.dealer_name}.`,
-                icon: '/favicon.ico'
+              const mappedItems = (itemsData || []).map((item: any) => {
+                let pName = item.products?.name;
+                if (!pName || pName === 'Plywood / Laminate') {
+                  if (item.product_name && item.product_name !== 'Plywood / Laminate') {
+                    pName = item.product_name;
+                  } else if (item.product_id) {
+                    const pid = String(item.product_id).toLowerCase();
+                    if (pid.includes('laminate')) pName = 'Laminate Sheet';
+                    else if (pid.includes('bwr')) pName = 'BWR Grade Plywood';
+                    else if (pid.includes('mr')) pName = 'Commercial MR Plywood';
+                    else if (pid.includes('calibrated')) pName = 'Calibrated Plywood';
+                    else pName = item.product_id;
+                  } else {
+                    pName = 'Plywood Sheet';
+                  }
+                }
+                return {
+                  id: item.id,
+                  product_name: pName,
+                  product_id: item.product_id,
+                  thickness: item.thickness,
+                  size: item.size,
+                  quantity: item.quantity,
+                  quality: item.quality,
+                  rate: item.rate || 0,
+                };
               });
+
+              const newEnq: Enquiry = {
+                id: payload.new.id,
+                dealer_name: payload.new.dealer_name,
+                dealer_phone: payload.new.dealer_phone,
+                company_name: payload.new.company_name,
+                delivery_location: payload.new.delivery_location,
+                comments: payload.new.comments || '',
+                status: payload.new.status,
+                billed_amount: payload.new.billed_amount || null,
+                payment_status: payload.new.payment_status || 'Pending',
+                created_at: payload.new.created_at,
+                enquiry_items: mappedItems || []
+              };
+
+              setEnquiries((prev) => {
+                const filtered = prev.filter((e) => e.id !== newEnq.id);
+                return [newEnq, ...filtered];
+              });
+            } catch (err) {
+              console.error('Failed to fetch realtime enquiry items:', err);
             }
-
-            // Set visual alert banner
-            setNewEnquiryAlert({
-              visible: true,
-              dealerName: payload.new.dealer_name,
-              id: payload.new.id,
-            });
-
-            // Reload all lists after exactly 800ms to pull joined product items safely
-            setTimeout(() => {
-              fetchData();
-            }, 800);
-          }, remainingMs);
+            await fetchData();
+          })();
         }
       )
       .on(
@@ -1326,6 +1331,87 @@ export default function AdminDashboard() {
     }
   };
 
+  const handleSendInvoiceAsImageToWhatsApp = async () => {
+    if (!invoiceCaptureRef.current || !activeBillingEnquiry) return;
+    setIsCapturingBill(true);
+    try {
+      // 1. Mark status as 'Sent' in Supabase
+      const { error } = await supabase
+        .from('enquiries')
+        .update({ status: 'Sent' })
+        .eq('id', activeBillingEnquiry.id);
+
+      if (!error) {
+        setEnquiries(prev => prev.map(e => e.id === activeBillingEnquiry.id ? { ...e, status: 'Sent' } : e));
+      }
+
+      // 2. Clone invoice container off-screen
+      const originalElement = invoiceCaptureRef.current;
+      const clone = originalElement.cloneNode(true) as HTMLElement;
+      clone.style.position = 'fixed';
+      clone.style.top = '-9999px';
+      clone.style.left = '-9999px';
+      clone.style.width = '450px';
+      clone.style.height = 'auto';
+      clone.style.backgroundColor = '#ffffff';
+      document.body.appendChild(clone);
+
+      const canvas = await html2canvas(clone, {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: '#ffffff'
+      });
+      document.body.removeChild(clone);
+
+      const fileName = `HD-PLY-Invoice-${activeBillingEnquiry.id.substring(0, 8).toUpperCase()}.png`;
+
+      canvas.toBlob(async (blob) => {
+        if (!blob) return;
+
+        // Try Native Share Registry with image file (Attaches PNG image file directly to WhatsApp on Mobile)
+        if (navigator.share && navigator.canShare) {
+          try {
+            const file = new File([blob], fileName, { type: 'image/png' });
+            if (navigator.canShare({ files: [file] })) {
+              await navigator.share({
+                files: [file],
+                title: 'HD PLYWOOD Tax Invoice Image',
+                text: `Tax Invoice Image for ${activeBillingEnquiry.dealer_name}`
+              });
+              return;
+            }
+          } catch (shareErr) {
+            console.warn('Native share of image failed, falling back:', shareErr);
+          }
+        }
+
+        // Web Fallback: Create Blob download and open WhatsApp Web
+        const blobUrl = URL.createObjectURL(blob);
+        const downloadLink = document.createElement('a');
+        downloadLink.href = blobUrl;
+        downloadLink.download = fileName;
+        downloadLink.target = '_blank';
+        document.body.appendChild(downloadLink);
+        downloadLink.click();
+        
+        setTimeout(() => {
+          document.body.removeChild(downloadLink);
+          URL.revokeObjectURL(blobUrl);
+        }, 1000);
+
+        const cleanPhone = activeBillingEnquiry.dealer_phone.replace(/[^0-9]/g, '');
+        const text = `HD PLYWOOD - Attached is your Tax Invoice Image (${fileName}). Total Billed: ₹${finalGrandTotal}/-`;
+        const waUrl = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(text)}`;
+        window.open(waUrl, '_blank', 'noopener,noreferrer');
+      }, 'image/png', 1.0);
+
+    } catch (err) {
+      console.error('Failed to send invoice image to WhatsApp:', err);
+    } finally {
+      setIsCapturingBill(false);
+    }
+  };
+
   const generateInvoiceImageForBill = async (enq: Enquiry) => {
     const tempContainer = document.createElement('div');
     tempContainer.style.position = 'fixed';
@@ -1632,9 +1718,6 @@ export default function AdminDashboard() {
         
         {activeAdminTab === 'enquiries' && (() => {
           const filteredLockedEnquiries = enquiries.filter((enq) => {
-            const elapsedSec = Math.floor((Date.now() - new Date(enq.created_at).getTime()) / 1000);
-            if (elapsedSec < 30) return false;
-            
             const statusLower = enq.status.toLowerCase();
             if (workflowFilter === 'Pending') {
               return statusLower === 'pending' || statusLower === 'contacted';
@@ -2522,6 +2605,16 @@ export default function AdminDashboard() {
 
           </div>
         )}
+
+        {/* Background Audio Wake-Lock element for mobile background playback */}
+        {isAudioEnabled && (
+          <audio
+            autoPlay
+            loop
+            src="data:audio/wav;base64,UklGRjIAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA="
+            className="hidden"
+          />
+        )}
       </main>
 
       {/* --- INVOICE GENERATION WORKSPACE MODAL ("HD PLY") --- */}
@@ -2929,33 +3022,16 @@ export default function AdminDashboard() {
                     <span>{isCapturingBill ? 'Generating Digital Receipt...' : 'Download Invoice Image'}</span>
                   </button>
 
-                  {/* WhatsApp send triggers */}
+                  {/* Send Bill via WhatsApp as Image button */}
                   <button
-                    onClick={async () => {
-                      if (!activeBillingEnquiry) return;
-                      await handleGenerateInvoiceImage();
-                      try {
-                        const { error } = await supabase
-                          .from('enquiries')
-                          .update({ status: 'Sent' })
-                          .eq('id', activeBillingEnquiry.id);
-                        if (!error) {
-                          setEnquiries(prev => prev.map(e => e.id === activeBillingEnquiry.id ? { ...e, status: 'Sent' } : e));
-                        }
-                      } catch (err) {
-                        console.error('Failed to update status to Sent:', err);
-                      }
-                      const cleanPhone = activeBillingEnquiry.dealer_phone.replace(/[^0-9]/g, '');
-                      const text = `HD PLYWOOD - Invoice generated successfully for your recent order. Total Amount: ₹${finalGrandTotal}/-`;
-                      const waUrl = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(text)}`;
-                      window.open(waUrl, '_blank', 'noopener,noreferrer');
-                    }}
-                    className="w-full flex items-center justify-center space-x-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl py-3.5 text-xs font-bold shadow-md shadow-emerald-600/10 transition"
+                    onClick={handleSendInvoiceAsImageToWhatsApp}
+                    disabled={isCapturingBill}
+                    className="w-full flex items-center justify-center space-x-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl py-3.5 text-xs font-extrabold shadow-md shadow-emerald-600/10 transition cursor-pointer active:scale-95"
                   >
                     <svg className="h-4.5 w-4.5 fill-white" viewBox="0 0 24 24">
                       <path d="M.057 24l1.687-6.163c-1.041-1.804-1.588-3.849-1.587-5.946C.06 5.348 5.397.01 12.008.01c3.202.001 6.212 1.246 8.477 3.514 2.266 2.268 3.507 5.28 3.505 8.484-.004 6.657-5.34 11.997-11.953 11.997-2.005-.001-3.973-.502-5.73-1.45L0 24zm6.59-4.846c1.6.95 3.188 1.449 4.625 1.451 5.437.002 9.861-4.379 9.864-9.799.002-2.623-1.023-5.086-2.885-6.948C16.39 2.017 13.945 1.01 11.99 1.012c-5.433 0-9.858 4.38-9.863 9.8-.001 2.016.524 3.99 1.522 5.722l-.993 3.624 3.992-.998zM18.156 14.8c-.33-.164-1.951-.955-2.25-1.066-.3-.11-.518-.165-.736.165-.218.33-.844 1.066-1.035 1.284-.19.217-.382.244-.712.079-.33-.164-1.392-.51-2.653-1.632-1.002-.89-1.677-1.99-1.874-2.318-.197-.33-.02-.508.145-.671.148-.147.33-.382.495-.572.164-.19.219-.328.329-.546.11-.218.055-.41-.027-.573-.082-.164-.736-1.754-1.008-2.409-.265-.638-.53-.55-.736-.56-.19-.01-.408-.01-.626-.01-.218 0-.573.082-.872.41-.3.33-1.145 1.117-1.145 2.727 0 1.61 1.173 3.167 1.336 3.385.163.218 2.3 3.498 5.568 4.908.778.335 1.385.535 1.859.684.78.247 1.49.212 2.052.128.625-.094 1.951-.793 2.224-1.558.272-.765.272-1.42.19-1.557-.081-.137-.299-.219-.628-.383z"/>
                     </svg>
-                    <span>Send Invoice Details to WhatsApp</span>
+                    <span>Send Bill via WhatsApp as Image</span>
                   </button>
                   
                   <button
