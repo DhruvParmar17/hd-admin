@@ -1264,70 +1264,78 @@ export default function AdminDashboard() {
     setIsBillFinalized(true);
   };
 
-  // --- DIGITAL BILL IMAGE GENERATION & MOBILE DOWNLOAD FIX ---
+  // --- DIGITAL BILL IMAGE GENERATION & MOBILE GALLERY DOWNLOAD FIX ---
   const handleGenerateInvoiceImage = async () => {
     if (!invoiceCaptureRef.current || !activeBillingEnquiry) return;
     setIsCapturingBill(true);
     try {
-      // Clone element off-screen to avoid hidden overflow / viewport scale issues
-      const originalElement = invoiceCaptureRef.current;
-      const clone = originalElement.cloneNode(true) as HTMLElement;
-      clone.style.position = 'fixed';
-      clone.style.top = '-9999px';
-      clone.style.left = '-9999px';
-      clone.style.width = '450px';
-      clone.style.height = 'auto';
-      clone.style.backgroundColor = '#ffffff';
-      document.body.appendChild(clone);
-
-      const canvas = await html2canvas(clone, {
+      const element = invoiceCaptureRef.current;
+      const canvas = await html2canvas(element, {
         scale: 2,
         useCORS: true,
-        backgroundColor: '#ffffff'
-      });
-      
-      document.body.removeChild(clone);
-
-      const fileName = `HD-PLY-Invoice-${activeBillingEnquiry.id.substring(0, 8).toUpperCase()}.png`;
-
-      // Convert canvas to Blob ObjectURL for direct mobile photo gallery saving
-      canvas.toBlob(async (blob) => {
-        if (!blob) return;
-
-        // Try Web Share API first (Best for iOS Photos & Android Gallery direct save)
-        if (navigator.share && navigator.canShare) {
-          try {
-            const file = new File([blob], fileName, { type: 'image/png' });
-            if (navigator.canShare({ files: [file] })) {
-              await navigator.share({
-                files: [file],
-                title: 'HD PLY Invoice',
-                text: `Invoice for ${activeBillingEnquiry.dealer_name}`
-              });
-              return;
-            }
-          } catch (shareErr) {
-            console.warn('Native share failed, falling back to blob download:', shareErr);
+        allowTaint: true,
+        backgroundColor: '#ffffff',
+        logging: false,
+        onclone: (clonedDoc) => {
+          const clonedElement = clonedDoc.getElementById('hd-ply-invoice-capture');
+          if (clonedElement) {
+            clonedElement.style.display = 'block';
+            clonedElement.style.visibility = 'visible';
+            clonedElement.style.maxHeight = 'none';
+            clonedElement.style.overflow = 'visible';
+            clonedElement.style.width = '450px';
           }
         }
+      });
 
-        // Direct Mobile & Desktop Blob URL Download
-        const blobUrl = URL.createObjectURL(blob);
-        const downloadLink = document.createElement('a');
-        downloadLink.href = blobUrl;
-        downloadLink.download = fileName;
-        downloadLink.target = '_blank';
-        document.body.appendChild(downloadLink);
-        downloadLink.click();
-        
-        setTimeout(() => {
-          document.body.removeChild(downloadLink);
-          URL.revokeObjectURL(blobUrl);
-        }, 1000);
-      }, 'image/png', 1.0);
+      const fileName = `HD-PLY-Invoice-${activeBillingEnquiry.id.substring(0, 8).toUpperCase()}.png`;
+      const dataUrl = canvas.toDataURL('image/png', 1.0);
+
+      const arr = dataUrl.split(',');
+      const mime = arr[0].match(/:(.*?);/)?.[1] || 'image/png';
+      const bstr = atob(arr[1]);
+      let n = bstr.length;
+      const u8arr = new Uint8Array(n);
+      while (n--) {
+        u8arr[n] = bstr.charCodeAt(n);
+      }
+      const blob = new Blob([u8arr], { type: mime });
+
+      // Try Native Mobile Share API first (Saves PNG image directly to Mobile Photo Gallery / Files)
+      if (typeof window !== 'undefined' && window.navigator && window.navigator.share) {
+        try {
+          const file = new File([blob], fileName, { type: 'image/png' });
+          if (window.navigator.canShare && window.navigator.canShare({ files: [file] })) {
+            await window.navigator.share({
+              files: [file],
+              title: 'HD PLYWOOD Tax Invoice Image',
+              text: `Tax Invoice Image for ${activeBillingEnquiry.dealer_name}`
+            });
+            return;
+          }
+        } catch (shareErr) {
+          console.warn('Native mobile share failed, falling back to direct download link:', shareErr);
+        }
+      }
+
+      // Direct Mobile & Desktop Blob Download Trigger
+      const blobUrl = URL.createObjectURL(blob);
+      const downloadLink = document.createElement('a');
+      downloadLink.href = blobUrl;
+      downloadLink.download = fileName;
+      downloadLink.setAttribute('download', fileName);
+      downloadLink.target = '_blank';
+      document.body.appendChild(downloadLink);
+      downloadLink.click();
+      
+      setTimeout(() => {
+        document.body.removeChild(downloadLink);
+        URL.revokeObjectURL(blobUrl);
+      }, 1000);
 
     } catch (err) {
       console.error('Failed to generate high-resolution invoice image:', err);
+      alert('Could not render invoice image. Please try again.');
     } finally {
       setIsCapturingBill(false);
     }
@@ -1347,68 +1355,78 @@ export default function AdminDashboard() {
         setEnquiries(prev => prev.map(e => e.id === activeBillingEnquiry.id ? { ...e, status: 'Sent' } : e));
       }
 
-      // 2. Clone invoice container off-screen
-      const originalElement = invoiceCaptureRef.current;
-      const clone = originalElement.cloneNode(true) as HTMLElement;
-      clone.style.position = 'fixed';
-      clone.style.top = '-9999px';
-      clone.style.left = '-9999px';
-      clone.style.width = '450px';
-      clone.style.height = 'auto';
-      clone.style.backgroundColor = '#ffffff';
-      document.body.appendChild(clone);
-
-      const canvas = await html2canvas(clone, {
+      // 2. Render invoice element directly
+      const element = invoiceCaptureRef.current;
+      const canvas = await html2canvas(element, {
         scale: 2,
         useCORS: true,
-        backgroundColor: '#ffffff'
-      });
-      document.body.removeChild(clone);
-
-      const fileName = `HD-PLY-Invoice-${activeBillingEnquiry.id.substring(0, 8).toUpperCase()}.png`;
-
-      canvas.toBlob(async (blob) => {
-        if (!blob) return;
-
-        // Try Native Share Registry with image file (Attaches PNG image file directly to WhatsApp on Mobile)
-        if (navigator.share && navigator.canShare) {
-          try {
-            const file = new File([blob], fileName, { type: 'image/png' });
-            if (navigator.canShare({ files: [file] })) {
-              await navigator.share({
-                files: [file],
-                title: 'HD PLYWOOD Tax Invoice Image',
-                text: `Tax Invoice Image for ${activeBillingEnquiry.dealer_name}`
-              });
-              return;
-            }
-          } catch (shareErr) {
-            console.warn('Native share of image failed, falling back:', shareErr);
+        allowTaint: true,
+        backgroundColor: '#ffffff',
+        logging: false,
+        onclone: (clonedDoc) => {
+          const clonedElement = clonedDoc.getElementById('hd-ply-invoice-capture');
+          if (clonedElement) {
+            clonedElement.style.display = 'block';
+            clonedElement.style.visibility = 'visible';
+            clonedElement.style.maxHeight = 'none';
+            clonedElement.style.overflow = 'visible';
+            clonedElement.style.width = '450px';
           }
         }
+      });
 
-        // Web Fallback: Create Blob download and open WhatsApp Web
-        const blobUrl = URL.createObjectURL(blob);
-        const downloadLink = document.createElement('a');
-        downloadLink.href = blobUrl;
-        downloadLink.download = fileName;
-        downloadLink.target = '_blank';
-        document.body.appendChild(downloadLink);
-        downloadLink.click();
-        
-        setTimeout(() => {
-          document.body.removeChild(downloadLink);
-          URL.revokeObjectURL(blobUrl);
-        }, 1000);
+      const fileName = `HD-PLY-Invoice-${activeBillingEnquiry.id.substring(0, 8).toUpperCase()}.png`;
+      const dataUrl = canvas.toDataURL('image/png', 1.0);
 
-        const cleanPhone = activeBillingEnquiry.dealer_phone.replace(/[^0-9]/g, '');
-        const text = `HD PLYWOOD - Attached is your Tax Invoice Image (${fileName}). Total Billed: ₹${finalGrandTotal}/-`;
-        const waUrl = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(text)}`;
-        window.open(waUrl, '_blank', 'noopener,noreferrer');
-      }, 'image/png', 1.0);
+      const arr = dataUrl.split(',');
+      const mime = arr[0].match(/:(.*?);/)?.[1] || 'image/png';
+      const bstr = atob(arr[1]);
+      let n = bstr.length;
+      const u8arr = new Uint8Array(n);
+      while (n--) {
+        u8arr[n] = bstr.charCodeAt(n);
+      }
+      const blob = new Blob([u8arr], { type: mime });
+
+      // 3. Try Native Share Registry with PNG image file (Attaches PNG image file directly to WhatsApp on Mobile)
+      if (typeof window !== 'undefined' && window.navigator && window.navigator.share) {
+        try {
+          const file = new File([blob], fileName, { type: 'image/png' });
+          if (window.navigator.canShare && window.navigator.canShare({ files: [file] })) {
+            await window.navigator.share({
+              files: [file],
+              title: 'HD PLYWOOD Tax Invoice Image',
+              text: `Tax Invoice Image for ${activeBillingEnquiry.dealer_name}`
+            });
+            return;
+          }
+        } catch (shareErr) {
+          console.warn('Native share of image failed, falling back:', shareErr);
+        }
+      }
+
+      // Web Fallback: Create Blob download and open WhatsApp Web
+      const blobUrl = URL.createObjectURL(blob);
+      const downloadLink = document.createElement('a');
+      downloadLink.href = blobUrl;
+      downloadLink.download = fileName;
+      downloadLink.target = '_blank';
+      document.body.appendChild(downloadLink);
+      downloadLink.click();
+      
+      setTimeout(() => {
+        document.body.removeChild(downloadLink);
+        URL.revokeObjectURL(blobUrl);
+      }, 1000);
+
+      const cleanPhone = activeBillingEnquiry.dealer_phone.replace(/[^0-9]/g, '');
+      const text = `HD PLYWOOD - Attached is your Tax Invoice Image (${fileName}). Total Billed: ₹${finalGrandTotal}/-`;
+      const waUrl = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(text)}`;
+      window.open(waUrl, '_blank', 'noopener,noreferrer');
 
     } catch (err) {
       console.error('Failed to send invoice image to WhatsApp:', err);
+      alert('Could not capture invoice image for WhatsApp. Please try again.');
     } finally {
       setIsCapturingBill(false);
     }
