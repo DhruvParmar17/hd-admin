@@ -42,8 +42,14 @@ serve(async (req) => {
     console.log(`Fetched ${subscriptions?.length || 0} subscriptions for dispatch...`)
 
     const payload = JSON.stringify({
-      title: '🚨 New Completed Order Received!',
-      body: 'A customer order has completed its countdown and is ready.'
+      title: "🚨 NEW CUSTOMER ENQUIRY RECEIVED!",
+      body: "Tap immediately to view material details and generate bill.",
+      icon: "/icon.png",
+      badge: "/badge.png",
+      tag: "new-enquiry",
+      renotify: true,
+      requireInteraction: true,
+      vibrate: [500, 110, 500, 110, 500, 110, 500]
     })
 
     const sendPromises = (subscriptions || []).map((sub: any) => {
@@ -51,7 +57,12 @@ serve(async (req) => {
         endpoint: sub.endpoint,
         keys: sub.keys
       }
-      return webpush.sendNotification(pushSubscription, payload)
+      return webpush.sendNotification(pushSubscription, payload, {
+        headers: {
+          'Urgency': 'high'
+        },
+        TTL: 86400 // 1 day
+      })
         .catch(async (err: any) => {
           console.error(`Failed to send push to ${sub.endpoint}:`, err)
           if (err.statusCode === 410 || err.statusCode === 404) {

@@ -59,6 +59,39 @@ function parseDimensions(sizeStr: string): { length: number; width: number } {
   return { length: 0, width: 0 };
 }
 
+function parseCommentsMetadata(comments: string | null | undefined): { challan: string; invoice: string; text: string } {
+  if (!comments) return { challan: '', invoice: '', text: '' };
+  let challan = '';
+  let invoice = '';
+  let text = comments;
+
+  const challanMatch = comments.match(/\[challan:([^\]]*)\]/);
+  if (challanMatch) {
+    challan = challanMatch[1];
+    text = text.replace(challanMatch[0], '');
+  }
+
+  const invoiceMatch = comments.match(/\[invoice:([^\]]*)\]/);
+  if (invoiceMatch) {
+    invoice = invoiceMatch[1];
+    text = text.replace(invoiceMatch[0], '');
+  }
+
+  return { challan, invoice, text };
+}
+
+function serializeCommentsMetadata(challan: string, invoice: string, text: string): string {
+  let result = '';
+  if (challan.trim()) {
+    result += `[challan:${challan.trim()}]`;
+  }
+  if (invoice.trim()) {
+    result += `[invoice:${invoice.trim()}]`;
+  }
+  result += text;
+  return result;
+}
+
 // Convert length to metres (or precision meter-to-feet conversion factor)
 function convertLengthToMetre(length: number): number {
   if (length === 8) return 2.44;
@@ -195,6 +228,8 @@ export default function AdminDashboard() {
   const [addTransport, setAddTransport] = useState(false);
   const [transportFee, setTransportFee] = useState(0);
   const [addGst, setAddGst] = useState(false);
+  const [challanNo, setChallanNo] = useState('');
+  const [invoiceNo, setInvoiceNo] = useState('');
   
   // Invoicing Draft Preview States
   const [showDraftPreview, setShowDraftPreview] = useState(false);
@@ -203,6 +238,8 @@ export default function AdminDashboard() {
   const [isBillFinalized, setIsBillFinalized] = useState(false);
   const [isCapturingBill, setIsCapturingBill] = useState(false);
   const invoiceCaptureRef = useRef<HTMLDivElement>(null);
+
+  const [billSearchQuery, setBillSearchQuery] = useState('');
 
   // --- LEDGER WORKSPACE STATES ---
   const [ledgerSearch, setLedgerSearch] = useState('');
@@ -762,6 +799,9 @@ export default function AdminDashboard() {
     setItemRates(initialRates);
     setAddTransport(false);
     setTransportFee(0);
+    const parsedMeta = parseCommentsMetadata(enq.comments);
+    setChallanNo(parsedMeta.challan);
+    setInvoiceNo(parsedMeta.invoice);
     setAddGst(false);
     setShowDraftPreview(false);
     setIsBillFinalized(false);
@@ -1235,11 +1275,15 @@ export default function AdminDashboard() {
   const handleSaveAndFinalizeBill = async () => {
     if (!activeBillingEnquiry) return;
     try {
+      const parsedComments = parseCommentsMetadata(activeBillingEnquiry.comments);
+      const updatedComments = serializeCommentsMetadata(challanNo, invoiceNo, parsedComments.text);
+
       const { error } = await supabase
         .from('enquiries')
         .update({
           status: 'Completed',
-          billed_amount: finalGrandTotal
+          billed_amount: finalGrandTotal,
+          comments: updatedComments
         })
         .eq('id', activeBillingEnquiry.id);
 
@@ -1323,6 +1367,8 @@ export default function AdminDashboard() {
           <div><strong>Dealer Name:</strong> ${activeBillingEnquiry.dealer_name}</div>
           <div><strong>Phone Number:</strong> ${activeBillingEnquiry.dealer_phone}</div>
           <div><strong>Calculation:</strong> ${billingMode} Mode</div>
+          ${challanNo ? `<div><strong>Challan No:</strong> ${challanNo}</div>` : ''}
+          ${invoiceNo ? `<div><strong>Invoice No:</strong> ${invoiceNo}</div>` : ''}
         </td>
         <td style="vertical-align: top; text-align: right;">
           <div><strong>Ref Order ID:</strong> ${refId}</div>
@@ -2531,6 +2577,16 @@ export default function AdminDashboard() {
                 <div className="rounded-3xl border border-stone-200 bg-white p-5 shadow-xs flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                   <div className="flex flex-wrap gap-4 items-center">
                     <div>
+                      <label className="block text-[9px] font-extrabold text-stone-400 uppercase tracking-wider mb-1">Search Challan / Invoice No. / Name</label>
+                      <input
+                        type="text"
+                        placeholder="Search reference or name..."
+                        value={billSearchQuery}
+                        onChange={(e) => setBillSearchQuery(e.target.value)}
+                        className="block rounded-xl border border-stone-200 bg-stone-50/50 px-3.5 py-1.5 text-xs font-bold text-stone-850 focus:outline-none w-60 sm:w-64"
+                      />
+                    </div>
+                    <div>
                       <label className="block text-[9px] font-extrabold text-stone-400 uppercase tracking-wider mb-1">From Date</label>
                       <input
                         type="date"
@@ -2549,12 +2605,12 @@ export default function AdminDashboard() {
                       />
                     </div>
                     <div className="pt-4">
-                      {(fromDate || toDate) && (
+                      {(fromDate || toDate || billSearchQuery) && (
                         <button
-                          onClick={() => { setFromDate(''); setToDate(''); }}
+                          onClick={() => { setFromDate(''); setToDate(''); setBillSearchQuery(''); }}
                           className="text-[10px] text-amber-850 hover:underline font-bold"
                         >
-                          Clear Date Filters
+                          Clear Filters
                         </button>
                       )}
                     </div>
@@ -2624,28 +2680,39 @@ export default function AdminDashboard() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-stone-150 bg-white">
-                      {enquiries
-                        .filter((e) => {
+                      {(() => {
+                        const filteredBills = enquiries.filter((e) => {
                           if (e.status.toLowerCase() !== 'completed') return false;
                           if (fromDate && new Date(e.created_at) < new Date(fromDate)) return false;
                           if (toDate && new Date(e.created_at) > new Date(toDate + 'T23:59:59')) return false;
+
+                          const q = billSearchQuery.toLowerCase().trim();
+                          if (q) {
+                            const parsedMeta = parseCommentsMetadata(e.comments);
+                            const refStr = `enq-${e.id.substring(0, 8).toUpperCase()}`.toLowerCase();
+                            const challanStr = parsedMeta.challan.toLowerCase();
+                            const invoiceStr = parsedMeta.invoice.toLowerCase();
+                            const nameStr = e.dealer_name.toLowerCase();
+                            if (
+                              !challanStr.includes(q) &&
+                              !invoiceStr.includes(q) &&
+                              !refStr.includes(q) &&
+                              !nameStr.includes(q)
+                            ) {
+                              return false;
+                            }
+                          }
                           return true;
-                        })
-                        .length === 0 ? (
+                        });
+
+                        return filteredBills.length === 0 ? (
                           <tr>
                             <td colSpan={6} className="text-center py-16 text-stone-400 font-medium">
                               No bills found in matching range.
                             </td>
                           </tr>
                         ) : (
-                          enquiries
-                            .filter((e) => {
-                              if (e.status.toLowerCase() !== 'completed') return false;
-                              if (fromDate && new Date(e.created_at) < new Date(fromDate)) return false;
-                              if (toDate && new Date(e.created_at) > new Date(toDate + 'T23:59:59')) return false;
-                              return true;
-                            })
-                            .map((enq) => (
+                          filteredBills.map((enq) => (
                               <tr key={enq.id} className="hover:bg-stone-50/50">
                                 <td className="px-6 py-4.5 whitespace-nowrap font-bold text-stone-900">
                                   {new Date(enq.created_at).toLocaleDateString('en-IN')}
@@ -2687,7 +2754,8 @@ export default function AdminDashboard() {
                                 </td>
                               </tr>
                             ))
-                        )}
+                        );
+                      })()}
                     </tbody>
                   </table>
                 </div>
@@ -2902,6 +2970,33 @@ export default function AdminDashboard() {
                       Adds 18% tax on the subtotal (items + transport cost if applicable).
                     </p>
                   </div>
+
+                  {/* Reference Numbers (Challan No & Invoice No) */}
+                  <div className="border border-stone-200 rounded-2xl p-4 bg-white space-y-3">
+                    <h5 className="text-[10px] font-extrabold text-stone-400 uppercase tracking-widest">Billing References</h5>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-[9px] font-extrabold text-stone-400 uppercase tracking-wider mb-1">Challan No.</label>
+                        <input
+                          type="text"
+                          placeholder="e.g. CH-2391"
+                          value={challanNo}
+                          onChange={(e) => setChallanNo(e.target.value)}
+                          className="w-full rounded-xl border border-stone-200 bg-white py-2 px-3 text-xs font-bold text-stone-855 focus:border-amber-800 focus:outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[9px] font-extrabold text-stone-400 uppercase tracking-wider mb-1">Invoice No.</label>
+                        <input
+                          type="text"
+                          placeholder="e.g. INV-9901"
+                          value={invoiceNo}
+                          onChange={(e) => setInvoiceNo(e.target.value)}
+                          className="w-full rounded-xl border border-stone-200 bg-white py-2 px-3 text-xs font-bold text-stone-855 focus:border-amber-800 focus:outline-none"
+                        />
+                      </div>
+                    </div>
+                  </div>
                 </div>
 
                 {/* Billing Summary calculation panel */}
@@ -3002,6 +3097,8 @@ export default function AdminDashboard() {
                     <div>Dealer Name : {activeBillingEnquiry.dealer_name}</div>
                     <div>Phone Number: {activeBillingEnquiry.dealer_phone}</div>
                     <div>Calculation : {billingMode} Mode</div>
+                    {challanNo && <div>Challan No.  : {challanNo}</div>}
+                    {invoiceNo && <div>Invoice No.  : {invoiceNo}</div>}
                   </div>
                   <div className="text-right">
                     <div>Ref Order ID: {activeBillingEnquiry.id.substring(0, 8).toUpperCase()}</div>
@@ -3429,6 +3526,15 @@ export default function AdminDashboard() {
                     <div>Dealer Name : {selectedHistoricalBill.dealer_name}</div>
                     <div>Phone Number: {selectedHistoricalBill.dealer_phone}</div>
                     <div>Location    : {selectedHistoricalBill.delivery_location}</div>
+                    {(() => {
+                      const parsed = parseCommentsMetadata(selectedHistoricalBill.comments);
+                      return (
+                        <>
+                          {parsed.challan && <div>Challan No.  : {parsed.challan}</div>}
+                          {parsed.invoice && <div>Invoice No.  : {parsed.invoice}</div>}
+                        </>
+                      );
+                    })()}
                   </div>
                   <div className="text-right">
                     <div>Ref Order ID: {selectedHistoricalBill.id.substring(0, 8).toUpperCase()}</div>
